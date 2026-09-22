@@ -90,6 +90,19 @@ The guard provides an atomic execution boundary:
 - queued queries remain durable and are scheduled again by normal qd restart
   recovery
 
+A successful guard acquisition returns an opaque owner token. Only that token
+can renew or release the guard, preventing an unrelated client from releasing
+another installer's guard.
+
+Restart guards use a 300-second lease. `install-user.sh` renews the lease
+immediately before restarting qd. If renewal fails or ownership has been lost,
+the installer aborts instead of performing an unsafe restart.
+
+If the installer exits or is killed while holding a guard, the lease eventually
+expires automatically. qd then accepts submissions again and allows queued
+queries to cross into running state, so a dead installer cannot leave the
+daemon permanently guarded.
+
 A refused upgrade leaves the existing daemon and running query untouched.
 After the active query finishes, run the installer again.
 
@@ -746,8 +759,12 @@ crossed the local execution boundary into an upstream turn.
 
 `install-user.sh` protects this boundary with qd's restart guard. Once the
 guard is acquired, new submissions are refused and queued work cannot become
-running until the guard is released or the daemon restarts. If running work
-already exists, the installer refuses the restart instead.
+running until the guard is released, its lease expires, or the daemon restarts.
+If running work already exists, the installer refuses the restart instead.
+
+Restart-guard ownership is represented by an opaque token. The default lease is
+300 seconds, and the installer renews that lease immediately before restart.
+Automatic lease expiry ensures abandoned guards do not permanently block qd.
 
 A query found in running state after an unguarded daemon restart becomes:
 
