@@ -18,6 +18,7 @@ from .models import (
 )
 
 
+MIN_SCHEMA_VERSION = 1
 SCHEMA_VERSION = 2
 
 _SESSION_NAME = re.compile(
@@ -630,7 +631,9 @@ class QStore:
                 missing_ok=True
             )
 
-    def _initialize(self) -> None:
+    def _ensure_current_schema(
+        self,
+    ) -> None:
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS metadata (
@@ -691,6 +694,9 @@ class QStore:
             """
         )
 
+    def _schema_version(
+        self,
+    ) -> int | None:
         row = self._db.execute(
             """
             SELECT value
@@ -700,6 +706,219 @@ class QStore:
         ).fetchone()
 
         if row is None:
+            return None
+
+        try:
+            return int(row["value"])
+
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise StateStoreError(
+                "invalid q database "
+                "schema_version"
+            ) from exc
+
+    def _backup_before_migration(
+        self,
+        *,
+        from_version: int,
+        to_version: int,
+    ) -> Path:
+        backup_dir = (
+            self.path.parent
+            / "backups"
+        )
+
+        backup_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+            mode=0o700,
+        )
+        backup_dir.chmod(0o700)
+
+        now = _now()
+
+        destination = (
+            backup_dir
+            / (
+                "pre-migrate-"
+                f"v{from_version}-to-v{to_version}-"
+                + now.strftime(
+                    "%Y%m%d-%H%M%S-%f"
+                )
+                + ".sqlite3"
+            )
+        )
+
+        self.backup(destination)
+
+        return destination
+
+    def _migrate_1_to_2(
+        self,
+    ) -> int:
+        foreign_keys = bool(
+            self._db.execute(
+                "PRAGMA foreign_keys"
+            ).fetchone()[0]
+        )
+
+        if foreign_keys:
+            self._db.execute(
+                "PRAGMA foreign_keys = OFF"
+            )
+
+        try:
+            self._db.execute(
+                "BEGIN IMMEDIATE"
+            )
+
+            self._db.execute(
+                """
+                CREATE TABLE sessions_migrate_v2 (
+                    session_name TEXT PRIMARY KEY,
+                    backend_thread_id TEXT UNIQUE,
+                    model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    tools_policy TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL,
+                    archived_at TEXT
+                )
+                """
+            )
+
+            self._db.execute(
+                """
+                INSERT INTO sessions_migrate_v2 (
+                    session_name,
+                    backend_thread_id,
+                    model,
+                    reasoning_effort,
+                    tools_policy,
+                    state,
+                    created_at,
+                    last_used_at,
+                    archived_at
+                )
+                SELECT
+                    session_name,
+                    backend_thread_id,
+                    model,
+                    reasoning_effort,
+                    tools_policy,
+                    state,
+                    created_at,
+                    last_used_at,
+                    archived_at
+                FROM sessions
+                """
+            )
+
+            self._db.execute(
+                "DROP TABLE sessions"
+            )
+
+            self._db.execute(
+                """
+                ALTER TABLE sessions_migrate_v2
+                RENAME TO sessions
+                """
+            )
+
+            cursor = self._db.execute(
+                """
+                UPDATE metadata
+                SET value = ?
+                WHERE key = 'schema_version'
+                """,
+                ("2",),
+            )
+
+            if cursor.rowcount != 1:
+                raise StateStoreError(
+                    "failed to update "
+                    "schema_version during "
+                    "migration 1 -> 2"
+                )
+
+            violations = (
+                self._db.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+            )
+
+            if violations:
+                raise StateStoreError(
+                    "foreign-key validation "
+                    "failed during migration "
+                    "1 -> 2"
+                )
+
+            self._db.commit()
+
+        except StateStoreError:
+            self._db.rollback()
+            raise
+
+        except sqlite3.Error as exc:
+            self._db.rollback()
+            raise StateStoreError(
+                "database migration "
+                f"1 -> 2 failed: {exc}"
+            ) from exc
+
+        finally:
+            if foreign_keys:
+                self._db.execute(
+                    "PRAGMA foreign_keys = ON"
+                )
+
+        return 2
+
+    def _migrate(
+        self,
+        version: int,
+    ) -> int:
+        current = version
+
+        while current < SCHEMA_VERSION:
+            if current == 1:
+                current = (
+                    self._migrate_1_to_2()
+                )
+                continue
+
+            raise StateStoreError(
+                "no q database migration "
+                f"path from version {current}"
+            )
+
+        return current
+
+    def _initialize(self) -> None:
+        # metadata must exist before a version
+        # can be discovered. No current-version
+        # tables are imposed on an older schema
+        # until its migration has completed.
+        self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        self._db.commit()
+
+        version = self._schema_version()
+
+        if version is None:
+            self._ensure_current_schema()
+
             self._db.execute(
                 """
                 INSERT INTO metadata(key, value)
@@ -708,12 +927,45 @@ class QStore:
                 (str(SCHEMA_VERSION),),
             )
             self._db.commit()
+            return
 
-        elif int(row["value"]) != SCHEMA_VERSION:
+        if version > SCHEMA_VERSION:
             raise StateStoreError(
-                "unsupported q database schema "
-                f"version {row['value']}"
+                "q database schema version "
+                f"{version} is newer than "
+                "supported version "
+                f"{SCHEMA_VERSION}"
             )
+
+        if version < MIN_SCHEMA_VERSION:
+            raise StateStoreError(
+                "unsupported q database "
+                f"schema version {version}"
+            )
+
+        if version < SCHEMA_VERSION:
+            self._backup_before_migration(
+                from_version=version,
+                to_version=(
+                    SCHEMA_VERSION
+                ),
+            )
+
+            version = self._migrate(
+                version
+            )
+
+        if version != SCHEMA_VERSION:
+            raise StateStoreError(
+                "unsupported q database "
+                f"schema version {version}"
+            )
+
+        # Apply idempotent current-schema objects,
+        # including indexes added without a schema
+        # version bump.
+        self._ensure_current_schema()
+        self._db.commit()
 
     @staticmethod
     def _validate_session_name(

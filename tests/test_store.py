@@ -799,3 +799,358 @@ def test_restore_rejects_live_database_as_source(
             live_path=live_path,
             backup_path=live_path,
         )
+
+
+def _create_v1_database(
+    path,
+):
+    db = sqlite3.connect(path)
+
+    db.executescript(
+        """
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE sessions (
+            session_name TEXT PRIMARY KEY,
+            backend_thread_id TEXT NOT NULL UNIQUE,
+            model TEXT NOT NULL,
+            reasoning_effort TEXT NOT NULL,
+            tools_policy TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+
+        CREATE TABLE queries (
+            query_id TEXT PRIMARY KEY,
+            session_name TEXT
+                REFERENCES sessions(session_name)
+                ON UPDATE CASCADE
+                ON DELETE SET NULL,
+            backend_thread_id TEXT,
+            upstream_turn_id TEXT,
+            model TEXT NOT NULL,
+            reasoning_effort TEXT NOT NULL,
+            tools_policy TEXT NOT NULL,
+            state TEXT NOT NULL,
+            prompt_metadata TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            error_type TEXT,
+            error_message TEXT,
+            retry_after TEXT,
+            log_path TEXT NOT NULL,
+            session_log_path TEXT,
+            detached INTEGER NOT NULL,
+            stdout_attached INTEGER NOT NULL,
+            cancel_requested_at TEXT,
+            last_stream_at TEXT
+        );
+
+        CREATE INDEX queries_state_idx
+        ON queries(state);
+
+        CREATE INDEX queries_session_created_idx
+        ON queries(session_name, created_at);
+        """
+    )
+
+    timestamp = (
+        "2026-09-01T00:00:00+00:00"
+    )
+
+    db.execute(
+        """
+        INSERT INTO metadata(key, value)
+        VALUES ('schema_version', '1')
+        """
+    )
+
+    db.execute(
+        """
+        INSERT INTO sessions (
+            session_name,
+            backend_thread_id,
+            model,
+            reasoning_effort,
+            tools_policy,
+            state,
+            created_at,
+            last_used_at,
+            archived_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            "legacy",
+            "thread-legacy",
+            "gpt-5.6-luna",
+            "xhigh",
+            "enabled",
+            "active",
+            timestamp,
+            timestamp,
+        ),
+    )
+
+    db.execute(
+        """
+        INSERT INTO queries (
+            query_id,
+            session_name,
+            backend_thread_id,
+            upstream_turn_id,
+            model,
+            reasoning_effort,
+            tools_policy,
+            state,
+            prompt_metadata,
+            created_at,
+            started_at,
+            completed_at,
+            error_type,
+            error_message,
+            retry_after,
+            log_path,
+            session_log_path,
+            detached,
+            stdout_attached,
+            cancel_requested_at,
+            last_stream_at
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, NULL, NULL, NULL,
+            ?, ?, 0, 1, NULL, ?
+        )
+        """,
+        (
+            "q-legacy",
+            "legacy",
+            "thread-legacy",
+            "turn-legacy",
+            "gpt-5.6-luna",
+            "xhigh",
+            "enabled",
+            "completed",
+            "{}",
+            timestamp,
+            timestamp,
+            timestamp,
+            "/tmp/q-legacy.ndjson",
+            "/tmp/legacy.ndjson",
+            timestamp,
+        ),
+    )
+
+    db.commit()
+    db.close()
+
+
+def test_v1_database_migrates_to_v2_without_data_loss(
+    tmp_path,
+):
+    path = tmp_path / "q.sqlite3"
+
+    _create_v1_database(path)
+
+    store = QStore(path)
+
+    version = store._db.execute(
+        """
+        SELECT value
+        FROM metadata
+        WHERE key = 'schema_version'
+        """
+    ).fetchone()[0]
+
+    assert version == "2"
+
+    legacy = store.get_session(
+        "legacy"
+    )
+
+    assert legacy is not None
+    assert (
+        legacy.backend_thread_id
+        == "thread-legacy"
+    )
+
+    query = store.get_query(
+        "q-legacy"
+    )
+
+    assert query is not None
+    assert query.session_name == "legacy"
+    assert (
+        query.backend_thread_id
+        == "thread-legacy"
+    )
+
+    # The v2 capability that required the
+    # migration: pending sessions may have no
+    # backend thread yet.
+    pending = store.create_session(
+        session_name="pending-after-migrate",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    assert (
+        pending.backend_thread_id
+        is None
+    )
+    assert (
+        pending.state
+        == SessionState.PENDING
+    )
+
+    columns = {
+        row["name"]: row
+        for row in store._db.execute(
+            "PRAGMA table_info(sessions)"
+        ).fetchall()
+    }
+
+    assert (
+        columns[
+            "backend_thread_id"
+        ]["notnull"]
+        == 0
+    )
+
+    indexes = {
+        row["name"]
+        for row in store._db.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+            """
+        ).fetchall()
+    }
+
+    assert (
+        "queries_completed_at_idx"
+        in indexes
+    )
+
+    assert (
+        store.quick_check()["ok"]
+        is True
+    )
+
+    store.close()
+
+    backups = list(
+        (
+            tmp_path
+            / "backups"
+        ).glob(
+            "pre-migrate-v1-to-v2-"
+            "*.sqlite3"
+        )
+    )
+
+    assert len(backups) == 1
+
+    backup = sqlite3.connect(
+        backups[0]
+    )
+
+    try:
+        backup_version = (
+            backup.execute(
+                """
+                SELECT value
+                FROM metadata
+                WHERE key = 'schema_version'
+                """
+            ).fetchone()[0]
+        )
+
+        assert backup_version == "1"
+
+        assert (
+            backup.execute(
+                "PRAGMA quick_check"
+            ).fetchone()[0]
+            == "ok"
+        )
+
+    finally:
+        backup.close()
+
+
+def test_current_v2_database_does_not_create_migration_backup(
+    tmp_path,
+):
+    path = tmp_path / "q.sqlite3"
+
+    store = QStore(path)
+    store.close()
+
+    reopened = QStore(path)
+    reopened.close()
+
+    backup_dir = (
+        tmp_path / "backups"
+    )
+
+    assert (
+        not backup_dir.exists()
+        or not list(
+            backup_dir.glob(
+                "pre-migrate-*.sqlite3"
+            )
+        )
+    )
+
+
+def test_newer_schema_is_refused_without_mutation(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    path = tmp_path / "q.sqlite3"
+
+    store = QStore(path)
+
+    with store._db:
+        store._db.execute(
+            """
+            UPDATE metadata
+            SET value = '999'
+            WHERE key = 'schema_version'
+            """
+        )
+
+    store.close()
+
+    with pytest.raises(
+        StateStoreError,
+        match="newer than supported",
+    ):
+        QStore(path)
+
+    raw = sqlite3.connect(path)
+
+    try:
+        version = raw.execute(
+            """
+            SELECT value
+            FROM metadata
+            WHERE key = 'schema_version'
+            """
+        ).fetchone()[0]
+
+        assert version == "999"
+
+    finally:
+        raw.close()
