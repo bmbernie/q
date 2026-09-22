@@ -7,6 +7,8 @@ import pytest
 
 from q.cli import (
     CLIError,
+    _interactive_result,
+    _safe_interaction_result,
     build_input,
     build_parser,
     run_query,
@@ -589,3 +591,55 @@ def test_permissions_interaction_can_deny():
         )
 
     asyncio.run(run())
+
+
+
+def test_command_approval_respects_available_decisions():
+    result = _interactive_result(
+        method=(
+            "item/commandExecution/"
+            "requestApproval"
+        ),
+        params={
+            "command": "touch /tmp/test",
+            "availableDecisions": [
+                "accept",
+                {
+                    "acceptWithExecpolicyAmendment": {
+                        "execpolicy_amendment": [
+                            "touch",
+                            "/tmp/test",
+                        ],
+                    },
+                },
+                "cancel",
+            ],
+        },
+        input_stream=TTYStringIO(
+            "c\n"
+        ),
+        output_stream=io.StringIO(),
+    )
+
+    assert result == {
+        "decision": "cancel",
+    }
+
+
+def test_safe_approval_falls_back_to_cancel_when_decline_unavailable():
+    result = _safe_interaction_result(
+        (
+            "item/commandExecution/"
+            "requestApproval"
+        ),
+        {
+            "availableDecisions": [
+                "accept",
+                "cancel",
+            ],
+        },
+    )
+
+    assert result == {
+        "decision": "cancel",
+    }

@@ -243,6 +243,54 @@ def _write_answer(
     stream.flush()
 
 
+def _available_approval_decisions(
+    params: dict,
+) -> list:
+    available = params.get(
+        "availableDecisions"
+    )
+
+    # Older servers/fixtures may omit this field.
+    if not isinstance(
+        available,
+        list,
+    ) or not available:
+        return [
+            "accept",
+            "acceptForSession",
+            "decline",
+            "cancel",
+        ]
+
+    return available
+
+
+def _safe_approval_result(
+    params: dict,
+) -> dict:
+    available = (
+        _available_approval_decisions(
+            params
+        )
+    )
+
+    # Never auto-approve. Prefer decline when
+    # Codex offers it, otherwise cancel.
+    for decision in (
+        "decline",
+        "cancel",
+    ):
+        if decision in available:
+            return {
+                "decision": decision,
+            }
+
+    raise CLIError(
+        "approval request has no safe "
+        "non-accept decision"
+    )
+
+
 def _safe_interaction_result(
     method: str,
     params: dict,
@@ -251,9 +299,9 @@ def _safe_interaction_result(
         "item/commandExecution/requestApproval",
         "item/fileChange/requestApproval",
     }:
-        return {
-            "decision": "decline",
-        }
+        return _safe_approval_result(
+            params
+        )
 
     if method == "mcpServer/elicitation/request":
         return {
@@ -308,7 +356,6 @@ def _safe_interaction_result(
         f"{method!r}"
     )
 
-
 def _prompt_line(
     input_stream: TextIO,
     output_stream: TextIO,
@@ -342,7 +389,14 @@ def _approval_result(
     output_stream: TextIO,
     title: str,
     details: list[tuple[str, object]],
+    params: dict,
 ) -> dict:
+    available = (
+        _available_approval_decisions(
+            params
+        )
+    )
+
     output_stream.write(
         f"\n[q interaction] {title}\n"
     )
@@ -355,62 +409,138 @@ def _approval_result(
             f"  {label}: {value}\n"
         )
 
-    output_stream.write(
-        "  [y] accept once\n"
-        "  [s] accept for session\n"
-        "  [n] decline\n"
-        "  [c] cancel\n"
-    )
+    choices: dict[
+        str,
+        tuple[str, object],
+    ] = {}
+
+    if "accept" in available:
+        choices["y"] = (
+            "accept once",
+            "accept",
+        )
+
+    if "acceptForSession" in available:
+        choices["s"] = (
+            "accept for session",
+            "acceptForSession",
+        )
+
+    if "decline" in available:
+        choices["n"] = (
+            "decline",
+            "decline",
+        )
+
+    if "cancel" in available:
+        choices["c"] = (
+            "cancel",
+            "cancel",
+        )
+
+    for decision in available:
+        if not isinstance(
+            decision,
+            dict,
+        ):
+            continue
+
+        if (
+            "acceptWithExecpolicyAmendment"
+            in decision
+        ):
+            choices["e"] = (
+                (
+                    "accept with proposed "
+                    "exec-policy amendment"
+                ),
+                decision,
+            )
+
+        elif (
+            "applyNetworkPolicyAmendment"
+            in decision
+        ):
+            choices["p"] = (
+                (
+                    "apply proposed network "
+                    "policy amendment"
+                ),
+                decision,
+            )
+
+    if not choices:
+        raise CLIError(
+            "approval request contains no "
+            "supported decisions"
+        )
+
+    for key, (
+        label,
+        _decision,
+    ) in choices.items():
+        output_stream.write(
+            f"  [{key}] {label}\n"
+        )
+
+    if "n" in choices:
+        default_key = "n"
+    elif "c" in choices:
+        default_key = "c"
+    else:
+        default_key = None
+
     output_stream.flush()
 
     while True:
+        suffix = (
+            f" [{default_key}]"
+            if default_key is not None
+            else ""
+        )
+
         choice = _prompt_line(
             input_stream,
             output_stream,
-            "choice [n]: ",
+            f"choice{suffix}: ",
         ).strip().lower()
 
-        if choice in {
-            "",
-            "n",
-            "no",
-            "decline",
-        }:
-            return {
-                "decision": "decline",
-            }
+        if (
+            choice == ""
+            and default_key is not None
+        ):
+            choice = default_key
 
-        if choice in {
-            "y",
-            "yes",
-            "accept",
-        }:
-            return {
-                "decision": "accept",
-            }
+        aliases = {
+            "yes": "y",
+            "accept": "y",
+            "session": "s",
+            "no": "n",
+            "decline": "n",
+            "cancel": "c",
+        }
 
-        if choice in {
-            "s",
-            "session",
-        }:
-            return {
-                "decision": (
-                    "acceptForSession"
-                ),
-            }
-
-        if choice in {
-            "c",
-            "cancel",
-        }:
-            return {
-                "decision": "cancel",
-            }
-
-        output_stream.write(
-            "invalid choice\n"
+        choice = aliases.get(
+            choice,
+            choice,
         )
 
+        selected = choices.get(
+            choice
+        )
+
+        if selected is None:
+            output_stream.write(
+                "invalid choice\n"
+            )
+            output_stream.flush()
+            continue
+
+        decision = selected[1]
+
+        return {
+            "decision": decision,
+        }
 
 def _tool_input_result(
     *,
@@ -805,6 +935,7 @@ def _interactive_result(
             input_stream=input_stream,
             output_stream=output_stream,
             title="command approval",
+            params=params,
             details=[
                 (
                     "command",
@@ -835,6 +966,7 @@ def _interactive_result(
             input_stream=input_stream,
             output_stream=output_stream,
             title="file change approval",
+            params=params,
             details=[
                 (
                     "grant root",

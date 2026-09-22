@@ -937,3 +937,34 @@ def test_detached_interaction_declines_automatically(
         store.close()
 
     asyncio.run(run())
+
+
+def test_detached_approval_uses_cancel_when_decline_unavailable():
+    from q.engine import (
+        _detached_interaction_result,
+    )
+
+    result = _detached_interaction_result(
+        (
+            "item/commandExecution/"
+            "requestApproval"
+        ),
+        {
+            "availableDecisions": [
+                "accept",
+                {
+                    "acceptWithExecpolicyAmendment": {
+                        "execpolicy_amendment": [
+                            "touch",
+                            "/tmp/example",
+                        ],
+                    },
+                },
+                "cancel",
+            ],
+        },
+    )
+
+    assert result == {
+        "decision": "cancel",
+    }

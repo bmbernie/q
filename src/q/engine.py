@@ -48,9 +48,34 @@ def _detached_interaction_result(
         "item/commandExecution/requestApproval",
         "item/fileChange/requestApproval",
     }:
-        return {
-            "decision": "decline",
-        }
+        available = params.get(
+            "availableDecisions"
+        )
+
+        if not isinstance(
+            available,
+            list,
+        ) or not available:
+            available = [
+                "accept",
+                "acceptForSession",
+                "decline",
+                "cancel",
+            ]
+
+        for decision in (
+            "decline",
+            "cancel",
+        ):
+            if decision in available:
+                return {
+                    "decision": decision,
+                }
+
+        raise BrokerProtocolError(
+            "approval request has no safe "
+            "non-accept decision"
+        )
 
     if method == "mcpServer/elicitation/request":
         return {
