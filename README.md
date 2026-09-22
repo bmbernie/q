@@ -284,6 +284,40 @@ Backup files:
 The command returns structured JSON containing the backup path, size, and
 quick-check result.
 
+Restore q state from a validated backup:
+
+    systemctl --user stop qd.service
+    qd db-restore ~/.local/share/q/backups/q-YYYYMMDD-HHMMSS.sqlite3
+    systemctl --user start qd.service
+    qd db-check
+
+`qd db-restore` is intentionally an offline operation. It refuses to run
+while qd holds the daemon lock; the command does not stop or restart the
+service automatically.
+
+Before replacing the live database, restore:
+
+- verifies the source with SQLite `PRAGMA quick_check`
+- verifies that the backup schema version matches q
+- creates a consistent backup of the current live database
+- checkpoints committed WAL contents
+- removes stale live `-wal` and `-shm` sidecars
+- atomically replaces the live database
+- sets the restored database to mode `0600`
+- reopens the restored database and runs another quick check
+
+The automatic rollback snapshot is stored under:
+
+    ~/.local/share/q/backups/
+
+with a name like:
+
+    pre-restore-YYYYMMDD-HHMMSS-ffffff.sqlite3
+
+If validation fails before replacement, the live database is left
+unchanged. The pre-restore snapshot provides an explicit rollback point
+after a successful replacement.
+
 `qd db-check` runs SQLite `PRAGMA quick_check` through the same `QStore`
 connection used by qd and reports the active durability/concurrency
 settings, including:
