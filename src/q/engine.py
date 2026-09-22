@@ -960,6 +960,9 @@ class QueryEngine:
         metadata = query.prompt_metadata
         session = None
         thread_id = None
+        selected_backend = metadata.get(
+            "backend"
+        )
 
         if query.session_name is not None:
             session = self.store.get_session(
@@ -995,9 +998,47 @@ class QueryEngine:
                 )
                 return
 
-            thread_id = (
-                session.backend_thread_id
+            bindings = (
+                self.store.list_session_backends(
+                    query.session_name
+                )
             )
+
+            if selected_backend is not None:
+                binding = (
+                    self.store.get_session_backend(
+                        query.session_name,
+                        selected_backend,
+                    )
+                )
+
+                if binding is not None:
+                    thread_id = (
+                        binding.conversation_id
+                    )
+
+            elif len(bindings) == 1:
+                binding = bindings[0]
+                selected_backend = (
+                    binding.backend_name
+                )
+                thread_id = (
+                    binding.conversation_id
+                )
+
+            elif len(bindings) > 1:
+                await self._fail(
+                    query_id,
+                    error_type=(
+                        "session_backend_ambiguous"
+                    ),
+                    error_message=(
+                        "session has multiple "
+                        "backend conversations; "
+                        "select a backend"
+                    ),
+                )
+                return
 
             if thread_id is not None:
                 query = (
@@ -1034,9 +1075,7 @@ class QueryEngine:
                     reasoning_effort=(
                         query.reasoning_effort
                     ),
-                    backend=(
-                        metadata.get("backend")
-                    ),
+                    backend=selected_backend,
                     thread_id=thread_id,
                     tools_policy=(
                         tools_for_request
@@ -1057,6 +1096,9 @@ class QueryEngine:
                         event,
                         expected_thread_id=(
                             thread_id
+                        ),
+                        expected_backend=(
+                            selected_backend
                         ),
                     )
 
@@ -1150,6 +1192,9 @@ class QueryEngine:
         expected_thread_id: (
             str | None
         ),
+        expected_backend: (
+            str | None
+        ),
     ) -> None:
         thread_id = event.get(
             "thread_id"
@@ -1167,6 +1212,18 @@ class QueryEngine:
                 "thread_id"
             )
 
+        backend = event.get(
+            "backend"
+        )
+
+        if (
+            not isinstance(backend, str)
+            or not backend
+        ):
+            raise BrokerProtocolError(
+                "thread event missing backend"
+            )
+
         if (
             expected_thread_id
             is not None
@@ -1176,6 +1233,17 @@ class QueryEngine:
             raise BrokerProtocolError(
                 "broker resumed unexpected "
                 "thread"
+            )
+
+        if (
+            expected_backend
+            is not None
+            and backend
+            != expected_backend
+        ):
+            raise BrokerProtocolError(
+                "broker selected unexpected "
+                "backend"
             )
 
         query = self.store.set_query_backend(
@@ -1195,21 +1263,27 @@ class QueryEngine:
                 "query session disappeared"
             )
 
-        if (
-            session.backend_thread_id
-            is None
-        ):
-            self.store.bind_session_thread(
+        binding = (
+            self.store.get_session_backend(
                 query.session_name,
+                backend,
+            )
+        )
+
+        if binding is None:
+            self.store.bind_session_backend(
+                query.session_name,
+                backend,
                 thread_id,
             )
 
         elif (
-            session.backend_thread_id
+            binding.conversation_id
             != thread_id
         ):
             raise BrokerProtocolError(
-                "session thread changed"
+                "session backend conversation "
+                "changed"
             )
 
     async def _handle_interaction(

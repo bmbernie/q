@@ -19,6 +19,7 @@ from .logs import stream_log_lines
 from .models import (
     QueryRecord,
     QueryState,
+    SessionBackendBinding,
     SessionRecord,
     ToolsPolicy,
 )
@@ -111,14 +112,45 @@ def query_dict(
 
 def session_dict(
     session: SessionRecord,
+    *,
+    backend_bindings: (
+        list[SessionBackendBinding] | None
+    ) = None,
 ) -> dict[str, Any]:
+    bindings = (
+        backend_bindings
+        if backend_bindings is not None
+        else []
+    )
+
+    # Compatibility field for older q clients:
+    # it remains useful when exactly one backend
+    # conversation exists, but is intentionally
+    # ambiguous/null when there are multiple.
+    if len(bindings) == 1:
+        backend_thread_id = (
+            bindings[0].conversation_id
+        )
+    elif len(bindings) > 1:
+        backend_thread_id = None
+    else:
+        backend_thread_id = (
+            session.backend_thread_id
+        )
+
     return {
         "session_name": (
             session.session_name
         ),
         "backend_thread_id": (
-            session.backend_thread_id
+            backend_thread_id
         ),
+        "backend_bindings": {
+            binding.backend_name: (
+                binding.conversation_id
+            )
+            for binding in bindings
+        },
         "model": session.model,
         "reasoning_effort": (
             session.reasoning_effort
@@ -1071,7 +1103,13 @@ class QDService:
             {
                 "sessions": [
                     session_dict(
-                        session
+                        session,
+                        backend_bindings=(
+                            self.store
+                            .list_session_backends(
+                                session.session_name
+                            )
+                        ),
                     )
                     for session
                     in (

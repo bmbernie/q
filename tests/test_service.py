@@ -93,6 +93,10 @@ class FakeBroker:
         yield {
             "type": "thread",
             "thread_id": thread_id,
+            "backend": (
+                kwargs["backend"]
+                or "codex"
+            ),
         }
 
         yield {
@@ -478,6 +482,15 @@ def test_management_methods(
                     "backend_thread_id"
                 ]
                 == "thread-remember"
+            )
+
+            assert (
+                sessions["sessions"][0][
+                    "backend_bindings"
+                ]
+                == {
+                    "codex": "thread-remember",
+                }
             )
 
         finally:
@@ -1990,6 +2003,73 @@ def test_restart_guard_lease_expiry_resumes_execution(
             assert (
                 final.state
                 == QueryState.COMPLETED
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_sessions_report_multiple_backend_bindings(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        store.create_session(
+            session_name="multi",
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=ToolsPolicy.ENABLED,
+        )
+
+        store.bind_session_backend(
+            "multi",
+            "codex",
+            "thread-codex",
+        )
+        store.bind_session_backend(
+            "multi",
+            "web",
+            "thread-web",
+        )
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "sessions"
+            )
+
+            session = result["sessions"][0]
+
+            assert (
+                session["session_name"]
+                == "multi"
+            )
+
+            assert (
+                session["backend_thread_id"]
+                is None
+            )
+
+            assert (
+                session["backend_bindings"]
+                == {
+                    "codex": "thread-codex",
+                    "web": "thread-web",
+                }
             )
 
         finally:

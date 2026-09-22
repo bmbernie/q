@@ -1608,6 +1608,22 @@ class QStore:
                     ),
                 )
 
+                self._db.execute(
+                    """
+                    UPDATE sessions
+                    SET
+                        state = ?,
+                        last_used_at = ?,
+                        archived_at = NULL
+                    WHERE session_name = ?
+                    """,
+                    (
+                        SessionState.ACTIVE.value,
+                        _iso(now),
+                        session_name,
+                    ),
+                )
+
         except sqlite3.IntegrityError as exc:
             if (
                 self.get_session(

@@ -80,6 +80,10 @@ class FakeBroker:
         yield {
             "type": "thread",
             "thread_id": thread_id,
+            "backend": (
+                kwargs["backend"]
+                or "codex"
+            ),
         }
 
         yield {
@@ -332,7 +336,7 @@ def test_different_sessions_run_concurrently(
     asyncio.run(run())
 
 
-def test_session_thread_is_bound_and_reused(
+def test_session_backend_is_bound_and_reused(
     tmp_path,
 ):
     async def run():
@@ -359,8 +363,17 @@ def test_session_thread_is_bound_and_reused(
             session.state
             == SessionState.ACTIVE
         )
+
+        binding = (
+            store.get_session_backend(
+                "persist",
+                "codex",
+            )
+        )
+
+        assert binding is not None
         assert (
-            session.backend_thread_id
+            binding.conversation_id
             == "thread-one"
         )
 
@@ -375,9 +388,11 @@ def test_session_thread_is_bound_and_reused(
         )
 
         assert (
-            broker.calls[0][
-                "thread_id"
-            ]
+            broker.calls[0]["backend"]
+            is None
+        )
+        assert (
+            broker.calls[0]["thread_id"]
             is None
         )
         assert (
@@ -388,9 +403,11 @@ def test_session_thread_is_bound_and_reused(
         )
 
         assert (
-            broker.calls[1][
-                "thread_id"
-            ]
+            broker.calls[1]["backend"]
+            == "codex"
+        )
+        assert (
+            broker.calls[1]["thread_id"]
             == "thread-one"
         )
         assert (
@@ -401,15 +418,11 @@ def test_session_thread_is_bound_and_reused(
         )
 
         assert (
-            broker.calls[0][
-                "ephemeral"
-            ]
+            broker.calls[0]["ephemeral"]
             is False
         )
         assert (
-            broker.calls[1][
-                "ephemeral"
-            ]
+            broker.calls[1]["ephemeral"]
             is False
         )
 
@@ -755,6 +768,7 @@ class InteractiveBroker:
         yield {
             "type": "thread",
             "thread_id": "thread-i",
+            "backend": "codex",
         }
 
         yield {
@@ -1120,6 +1134,141 @@ def test_emit_rotates_global_and_session_logs_only(
         assert '"type":"probe"' in (
             query_current
         )
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_session_can_hold_distinct_backend_bindings(
+    tmp_path,
+):
+    async def run():
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        web_query = await engine.submit(
+            input_text="web-one",
+            cwd="/tmp",
+            session_name="multi-backend",
+            backend="web",
+        )
+
+        await engine.wait(
+            web_query.query_id
+        )
+
+        codex_query = await engine.submit(
+            input_text="codex-one",
+            cwd="/tmp",
+            session_name="multi-backend",
+            backend="codex",
+        )
+
+        await engine.wait(
+            codex_query.query_id
+        )
+
+        web_binding = (
+            store.get_session_backend(
+                "multi-backend",
+                "web",
+            )
+        )
+        codex_binding = (
+            store.get_session_backend(
+                "multi-backend",
+                "codex",
+            )
+        )
+
+        assert web_binding is not None
+        assert codex_binding is not None
+
+        assert (
+            web_binding.conversation_id
+            == "thread-web-one"
+        )
+        assert (
+            codex_binding.conversation_id
+            == "thread-codex-one"
+        )
+
+        resumed = await engine.submit(
+            input_text="web-two",
+            cwd="/tmp",
+            session_name="multi-backend",
+            backend="web",
+        )
+
+        await engine.wait(
+            resumed.query_id
+        )
+
+        assert (
+            broker.calls[2]["backend"]
+            == "web"
+        )
+        assert (
+            broker.calls[2]["thread_id"]
+            == "thread-web-one"
+        )
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_session_with_multiple_bindings_requires_backend(
+    tmp_path,
+):
+    async def run():
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        store.create_session(
+            session_name="ambiguous",
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+        )
+
+        store.bind_session_backend(
+            "ambiguous",
+            "codex",
+            "thread-codex",
+        )
+        store.bind_session_backend(
+            "ambiguous",
+            "web",
+            "thread-web",
+        )
+
+        query = await engine.submit(
+            input_text="ambiguous",
+            cwd="/tmp",
+            session_name="ambiguous",
+        )
+
+        done = await engine.wait(
+            query.query_id
+        )
+
+        assert (
+            done.state
+            == QueryState.FAILED
+        )
+        assert (
+            done.error_type
+            == "session_backend_ambiguous"
+        )
+        assert broker.calls == []
 
         await engine.aclose()
         store.close()
