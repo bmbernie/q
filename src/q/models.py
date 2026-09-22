@@ -16,6 +16,7 @@ class QueryState(StrEnum):
 
 
 class SessionState(StrEnum):
+    PENDING = "pending"
     ACTIVE = "active"
     ARCHIVED = "archived"
     BROKEN = "broken"
@@ -29,7 +30,7 @@ class ToolsPolicy(StrEnum):
 @dataclass(frozen=True, slots=True)
 class SessionRecord:
     session_name: str
-    backend_thread_id: str
+    backend_thread_id: str | None
     model: str
     reasoning_effort: str
     tools_policy: ToolsPolicy

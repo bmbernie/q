@@ -16,7 +16,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SESSION_NAME = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
@@ -122,7 +122,7 @@ class QStore:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 session_name TEXT PRIMARY KEY,
-                backend_thread_id TEXT NOT NULL UNIQUE,
+                backend_thread_id TEXT UNIQUE,
                 model TEXT NOT NULL,
                 reasoning_effort TEXT NOT NULL,
                 tools_policy TEXT NOT NULL,
@@ -208,7 +208,7 @@ class QStore:
         self,
         *,
         session_name: str,
-        backend_thread_id: str,
+        backend_thread_id: str | None = None,
         model: str,
         reasoning_effort: str,
         tools_policy: ToolsPolicy,
@@ -218,6 +218,12 @@ class QStore:
         )
 
         now = _now()
+
+        state = (
+            SessionState.ACTIVE
+            if backend_thread_id is not None
+            else SessionState.PENDING
+        )
 
         try:
             with self._db:
@@ -242,7 +248,7 @@ class QStore:
                         model,
                         reasoning_effort,
                         tools_policy.value,
-                        SessionState.ACTIVE.value,
+                        state.value,
                         _iso(now),
                         _iso(now),
                     ),
@@ -252,6 +258,69 @@ class QStore:
             raise SessionAlreadyExists(
                 session_name
             ) from exc
+
+        session = self.get_session(
+            session_name
+        )
+
+        assert session is not None
+        return session
+
+    def bind_session_thread(
+        self,
+        session_name: str,
+        backend_thread_id: str,
+    ) -> SessionRecord:
+        if not backend_thread_id:
+            raise ValueError(
+                "backend_thread_id must not be empty"
+            )
+
+        now = _now()
+
+        try:
+            with self._db:
+                cursor = self._db.execute(
+                    """
+                    UPDATE sessions
+                    SET
+                        backend_thread_id = ?,
+                        state = ?,
+                        last_used_at = ?,
+                        archived_at = NULL
+                    WHERE session_name = ?
+                      AND backend_thread_id IS NULL
+                      AND state = ?
+                    """,
+                    (
+                        backend_thread_id,
+                        SessionState.ACTIVE.value,
+                        _iso(now),
+                        session_name,
+                        SessionState.PENDING.value,
+                    ),
+                )
+
+        except sqlite3.IntegrityError as exc:
+            raise StateStoreError(
+                "backend thread is already "
+                "mapped to another session"
+            ) from exc
+
+        if cursor.rowcount != 1:
+            current = self.get_session(
+                session_name
+            )
+
+            if current is None:
+                raise KeyError(
+                    session_name
+                )
+
+            raise StateStoreError(
+                "session is not pending "
+                "or already has a backend thread"
+            )
 
         session = self.get_session(
             session_name

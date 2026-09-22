@@ -289,3 +289,106 @@ def test_query_filters_and_session_archive(
     assert archived.archived_at is not None
 
     store.close()
+
+
+
+def test_pending_session_can_own_query_before_thread_exists(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    session = store.create_session(
+        session_name="new-session",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    assert (
+        session.state
+        == SessionState.PENDING
+    )
+    assert (
+        session.backend_thread_id
+        is None
+    )
+
+    query = store.create_query(
+        query_id="q-pending",
+        session_name="new-session",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+        prompt_metadata={},
+        log_path="/tmp/q-pending.log",
+        session_log_path=(
+            "/tmp/new-session.log"
+        ),
+        detached=False,
+        stdout_attached=True,
+    )
+
+    assert (
+        query.session_name
+        == "new-session"
+    )
+    assert (
+        query.backend_thread_id
+        is None
+    )
+
+    bound = store.bind_session_thread(
+        "new-session",
+        "thread-new",
+    )
+
+    assert (
+        bound.state
+        == SessionState.ACTIVE
+    )
+    assert (
+        bound.backend_thread_id
+        == "thread-new"
+    )
+
+    store.close()
+
+
+def test_active_session_cannot_be_rebound(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    store.create_session(
+        session_name="fixed",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    store.bind_session_thread(
+        "fixed",
+        "thread-a",
+    )
+
+    from q.store import StateStoreError
+
+    with pytest.raises(
+        StateStoreError
+    ):
+        store.bind_session_thread(
+            "fixed",
+            "thread-b",
+        )
+
+    session = store.get_session(
+        "fixed"
+    )
+
+    assert session is not None
+    assert (
+        session.backend_thread_id
+        == "thread-a"
+    )
+
+    store.close()
