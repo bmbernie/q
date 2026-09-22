@@ -323,6 +323,313 @@ class QStore:
                     missing_ok=True
                 )
 
+    @staticmethod
+    def _validate_snapshot(
+        path: Path,
+    ) -> dict[str, Any]:
+        path = (
+            path
+            .expanduser()
+            .resolve(strict=False)
+        )
+
+        if not path.is_file():
+            raise StateStoreError(
+                "database snapshot does not "
+                f"exist: {path}"
+            )
+
+        db = sqlite3.connect(
+            path,
+            timeout=5.0,
+        )
+
+        try:
+            checks = [
+                str(row[0])
+                for row in db.execute(
+                    "PRAGMA quick_check"
+                ).fetchall()
+            ]
+
+            if checks != ["ok"]:
+                raise StateStoreError(
+                    "snapshot quick_check "
+                    "failed: "
+                    + "; ".join(checks)
+                )
+
+            try:
+                row = db.execute(
+                    """
+                    SELECT value
+                    FROM metadata
+                    WHERE key = 'schema_version'
+                    """
+                ).fetchone()
+
+            except sqlite3.Error as exc:
+                raise StateStoreError(
+                    "snapshot does not contain "
+                    "a valid q schema"
+                ) from exc
+
+            if row is None:
+                raise StateStoreError(
+                    "snapshot has no "
+                    "schema_version"
+                )
+
+            try:
+                schema_version = int(
+                    row[0]
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise StateStoreError(
+                    "snapshot has invalid "
+                    "schema_version"
+                ) from exc
+
+            if (
+                schema_version
+                != SCHEMA_VERSION
+            ):
+                raise StateStoreError(
+                    "snapshot schema version "
+                    f"{schema_version} does not "
+                    "match required version "
+                    f"{SCHEMA_VERSION}"
+                )
+
+            return {
+                "quick_check": checks,
+                "schema_version": (
+                    schema_version
+                ),
+            }
+
+        finally:
+            db.close()
+
+    @classmethod
+    def restore_backup(
+        cls,
+        *,
+        live_path: Path,
+        backup_path: Path,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if now is None:
+            now = datetime.now(
+                timezone.utc
+            )
+
+        live_path = (
+            live_path
+            .expanduser()
+            .resolve(strict=False)
+        )
+        backup_path = (
+            backup_path
+            .expanduser()
+            .resolve(strict=False)
+        )
+
+        if live_path == backup_path:
+            raise StateStoreError(
+                "backup path is the live "
+                "database path"
+            )
+
+        source_info = (
+            cls._validate_snapshot(
+                backup_path
+            )
+        )
+
+        live_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        rollback_path = None
+
+        if live_path.exists():
+            current = cls(
+                live_path
+            )
+
+            try:
+                rollback_dir = (
+                    live_path.parent
+                    / "backups"
+                )
+
+                rollback_dir.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                    mode=0o700,
+                )
+                rollback_dir.chmod(0o700)
+
+                rollback_path = (
+                    rollback_dir
+                    / (
+                        "pre-restore-"
+                        + now.strftime(
+                            "%Y%m%d-%H%M%S-%f"
+                        )
+                        + ".sqlite3"
+                    )
+                )
+
+                current.backup(
+                    rollback_path
+                )
+
+                # qd is offline and this is the
+                # only live DB connection. Merge
+                # any committed WAL content into
+                # the main DB before removing
+                # stale sidecars.
+                current._db.execute(
+                    "PRAGMA wal_checkpoint("
+                    "TRUNCATE)"
+                ).fetchone()
+
+            finally:
+                current.close()
+
+        fd, raw_temp = tempfile.mkstemp(
+            dir=live_path.parent,
+            prefix=".q-restore.",
+            suffix=".sqlite3.tmp",
+        )
+        os.close(fd)
+
+        temp_path = Path(raw_temp)
+
+        try:
+            os.chmod(
+                temp_path,
+                0o600,
+            )
+
+            source = sqlite3.connect(
+                backup_path,
+                timeout=5.0,
+            )
+            target = sqlite3.connect(
+                temp_path,
+                timeout=5.0,
+            )
+
+            try:
+                source.backup(target)
+
+                target.execute(
+                    "PRAGMA journal_mode = DELETE"
+                )
+
+            finally:
+                target.close()
+                source.close()
+
+            cls._validate_snapshot(
+                temp_path
+            )
+
+            os.chmod(
+                temp_path,
+                0o600,
+            )
+
+            # Any old WAL was checkpointed above.
+            # Remove stale sidecars before the new
+            # main DB becomes live.
+            for suffix in (
+                "-wal",
+                "-shm",
+            ):
+                Path(
+                    str(live_path)
+                    + suffix
+                ).unlink(
+                    missing_ok=True
+                )
+
+            os.replace(
+                temp_path,
+                live_path,
+            )
+            os.chmod(
+                live_path,
+                0o600,
+            )
+
+            restored = cls(
+                live_path
+            )
+
+            try:
+                health = (
+                    restored.quick_check()
+                )
+
+            finally:
+                restored.close()
+
+            if health["ok"] is not True:
+                raise StateStoreError(
+                    "restored database failed "
+                    "post-restore quick_check"
+                )
+
+            return {
+                "ok": True,
+                "path": str(live_path),
+                "restored_from": str(
+                    backup_path
+                ),
+                "rollback_backup": (
+                    str(rollback_path)
+                    if rollback_path
+                    is not None
+                    else None
+                ),
+                "schema_version": (
+                    source_info[
+                        "schema_version"
+                    ]
+                ),
+                "quick_check": (
+                    health["quick_check"]
+                ),
+                "size_bytes": (
+                    live_path
+                    .stat()
+                    .st_size
+                ),
+            }
+
+        except (
+            OSError,
+            sqlite3.Error,
+        ) as exc:
+            raise StateStoreError(
+                f"database restore failed: "
+                f"{exc}"
+            ) from exc
+
+        finally:
+            temp_path.unlink(
+                missing_ok=True
+            )
+
     def _initialize(self) -> None:
         self._db.executescript(
             """

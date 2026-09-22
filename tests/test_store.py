@@ -685,3 +685,117 @@ def test_default_database_backup_directory(
     ) == 0o700
 
     store.close()
+
+
+def test_restore_backup_replaces_live_database_and_preserves_rollback(
+    tmp_path,
+):
+    live_path = tmp_path / "q.sqlite3"
+    source_path = tmp_path / "source.sqlite3"
+
+    live = QStore(live_path)
+
+    live.create_session(
+        session_name="live-only",
+        backend_thread_id="thread-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    live.close()
+
+    source = QStore(source_path)
+
+    source.create_session(
+        session_name="source-only",
+        backend_thread_id="thread-source",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    source.close()
+
+    result = QStore.restore_backup(
+        live_path=live_path,
+        backup_path=source_path,
+    )
+
+    assert result["ok"] is True
+    assert result["quick_check"] == ["ok"]
+    assert result["schema_version"] == 2
+
+    rollback = Path(
+        result["rollback_backup"]
+    )
+
+    assert rollback.exists()
+
+    restored = QStore(live_path)
+
+    assert restored.get_session(
+        "source-only"
+    ) is not None
+
+    assert restored.get_session(
+        "live-only"
+    ) is None
+
+    restored.close()
+
+    previous = QStore(rollback)
+
+    assert previous.get_session(
+        "live-only"
+    ) is not None
+
+    previous.close()
+
+
+def test_restore_rejects_wrong_schema_version(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = tmp_path / "source.sqlite3"
+
+    live = QStore(live_path)
+    live.close()
+
+    source = QStore(source_path)
+
+    with source._db:
+        source._db.execute(
+            """
+            UPDATE metadata
+            SET value = '999'
+            WHERE key = 'schema_version'
+            """
+        )
+
+    source.close()
+
+    with pytest.raises(StateStoreError):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+
+def test_restore_rejects_live_database_as_source(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+
+    live = QStore(live_path)
+    live.close()
+
+    with pytest.raises(StateStoreError):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=live_path,
+        )

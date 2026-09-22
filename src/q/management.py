@@ -67,6 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="check q state database health",
     )
 
+    restore = subparsers.add_parser(
+        "db-restore",
+        help=(
+            "restore q state while qd "
+            "is stopped"
+        ),
+    )
+    restore.add_argument(
+        "backup",
+    )
+
     db_backup = subparsers.add_parser(
         "db-backup",
         help="create a consistent q database backup",

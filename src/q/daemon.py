@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import errno
+import json
 import fcntl
 import os
 import signal
@@ -21,7 +23,10 @@ from .paths import (
 )
 from .service import QDService
 from .retention import cleanup_query_logs
-from .store import QStore
+from .store import (
+    QStore,
+    StateStoreError,
+)
 
 
 DEFAULT_BROKER_URL = (
@@ -326,6 +331,61 @@ async def _main() -> None:
         await broker.aclose()
 
 
+def _db_restore_main(
+    argv: list[str],
+) -> None:
+    parser = argparse.ArgumentParser(
+        prog="qd db-restore",
+        description=(
+            "Restore q state from a "
+            "validated SQLite backup."
+        ),
+    )
+    parser.add_argument(
+        "backup",
+        help="backup SQLite file",
+    )
+
+    args = parser.parse_args(argv)
+    paths = resolve_paths()
+
+    backup_path = (
+        Path(args.backup)
+        .expanduser()
+        .resolve(strict=False)
+    )
+
+    lock = DaemonLock(paths.lock_path)
+
+    try:
+        lock.acquire()
+    except DaemonAlreadyRunning as exc:
+        raise SystemExit(
+            "qd db-restore requires qd "
+            "to be stopped"
+        ) from exc
+
+    try:
+        result = QStore.restore_backup(
+            live_path=paths.database_path,
+            backup_path=backup_path,
+        )
+    except StateStoreError as exc:
+        raise SystemExit(
+            f"qd db-restore: {exc}"
+        ) from exc
+    finally:
+        lock.release()
+
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def main(
     argv: list[str] | None = None,
 ) -> None:
@@ -342,6 +402,13 @@ def main(
     # starts the daemon. "qd serve" is an
     # explicit equivalent for systemd and
     # manual administration.
+    if (
+        args
+        and args[0] == "db-restore"
+    ):
+        _db_restore_main(args[1:])
+        return
+
     if args and args[0] != "serve":
         from .management import (
             main as management_main,

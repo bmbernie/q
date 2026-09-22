@@ -325,3 +325,130 @@ def test_serve_runs_query_log_cleanup(
         )
 
     asyncio.run(run())
+
+
+def test_db_restore_refuses_while_daemon_lock_is_held(
+    tmp_path,
+    monkeypatch,
+):
+    from q.daemon import _db_restore_main
+    from q.models import ToolsPolicy
+    from q.store import QStore
+
+    paths = resolve_paths(
+        environ={
+            "HOME": str(tmp_path),
+            "XDG_RUNTIME_DIR": str(
+                tmp_path / "runtime"
+            ),
+            "XDG_DATA_HOME": str(
+                tmp_path / "data"
+            ),
+            "XDG_STATE_HOME": str(
+                tmp_path / "state"
+            ),
+        },
+    )
+
+    backup = tmp_path / "backup.sqlite3"
+
+    source = QStore(backup)
+
+    source.create_session(
+        session_name="restore-proof",
+        backend_thread_id="thread-restore",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    source.close()
+
+    monkeypatch.setattr(
+        "q.daemon.resolve_paths",
+        lambda: paths,
+    )
+
+    held = DaemonLock(paths.lock_path)
+    held.acquire()
+
+    try:
+        with pytest.raises(
+            SystemExit,
+            match="requires qd to be stopped",
+        ):
+            _db_restore_main(
+                [str(backup)]
+            )
+    finally:
+        held.release()
+
+
+def test_db_restore_command_restores_when_offline(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    import json
+
+    from q.daemon import _db_restore_main
+    from q.models import ToolsPolicy
+    from q.store import QStore
+
+    paths = resolve_paths(
+        environ={
+            "HOME": str(tmp_path),
+            "XDG_RUNTIME_DIR": str(
+                tmp_path / "runtime"
+            ),
+            "XDG_DATA_HOME": str(
+                tmp_path / "data"
+            ),
+            "XDG_STATE_HOME": str(
+                tmp_path / "state"
+            ),
+        },
+    )
+
+    live = QStore(paths.database_path)
+    live.close()
+
+    backup = tmp_path / "backup.sqlite3"
+
+    source = QStore(backup)
+
+    source.create_session(
+        session_name="restored",
+        backend_thread_id="thread-restored",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    source.close()
+
+    monkeypatch.setattr(
+        "q.daemon.resolve_paths",
+        lambda: paths,
+    )
+
+    _db_restore_main(
+        [str(backup)]
+    )
+
+    output = json.loads(
+        capsys.readouterr().out
+    )
+
+    assert output["ok"] is True
+    assert output["rollback_backup"] is not None
+
+    restored = QStore(
+        paths.database_path
+    )
+
+    assert restored.get_session(
+        "restored"
+    ) is not None
+
+    restored.close()
