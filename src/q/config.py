@@ -17,6 +17,9 @@ DEFAULT_LOG_ROTATE_BYTES = (
 DEFAULT_LOG_ROTATE_ARCHIVES = 5
 DEFAULT_QUERY_LOG_RETENTION_DAYS = 30
 DEFAULT_QUERY_LOG_CLEANUP_INTERVAL_SECONDS = 3600
+DEFAULT_BACKUP_RETENTION_COUNT = 20
+DEFAULT_BACKUP_RETENTION_DAYS = 90
+DEFAULT_BACKUP_CLEANUP_INTERVAL_SECONDS = 3600
 
 _ALLOWED_KEYS = {
     "model",
@@ -27,6 +30,9 @@ _ALLOWED_KEYS = {
     "log_rotate_archives",
     "query_log_retention_days",
     "query_log_cleanup_interval_seconds",
+    "backup_retention_count",
+    "backup_retention_days",
+    "backup_cleanup_interval_seconds",
 }
 
 _ALLOWED_SANDBOXES = {
@@ -61,6 +67,15 @@ class QConfig:
     )
     query_log_cleanup_interval_seconds: int = (
         DEFAULT_QUERY_LOG_CLEANUP_INTERVAL_SECONDS
+    )
+    backup_retention_count: int = (
+        DEFAULT_BACKUP_RETENTION_COUNT
+    )
+    backup_retention_days: int = (
+        DEFAULT_BACKUP_RETENTION_DAYS
+    )
+    backup_cleanup_interval_seconds: int = (
+        DEFAULT_BACKUP_CLEANUP_INTERVAL_SECONDS
     )
 
 
@@ -266,6 +281,53 @@ def load_config(
             "retention is enabled"
         )
 
+    backup_retention_count = (
+        _nonnegative_int(
+            data.get(
+                "backup_retention_count",
+                DEFAULT_BACKUP_RETENTION_COUNT,
+            ),
+            name="backup_retention_count",
+        )
+    )
+
+    backup_retention_days = (
+        _nonnegative_int(
+            data.get(
+                "backup_retention_days",
+                DEFAULT_BACKUP_RETENTION_DAYS,
+            ),
+            name="backup_retention_days",
+        )
+    )
+
+    backup_cleanup_interval_seconds = (
+        _nonnegative_int(
+            data.get(
+                "backup_cleanup_interval_seconds",
+                DEFAULT_BACKUP_CLEANUP_INTERVAL_SECONDS,
+            ),
+            name=(
+                "backup_cleanup_interval_seconds"
+            ),
+        )
+    )
+
+    if (
+        (
+            backup_retention_count > 0
+            or backup_retention_days > 0
+        )
+        and
+        backup_cleanup_interval_seconds
+        == 0
+    ):
+        raise ConfigError(
+            "backup_cleanup_interval_seconds "
+            "must be at least 1 when backup "
+            "retention is enabled"
+        )
+
     return QConfig(
         model=model,
         reasoning_effort=(
@@ -284,5 +346,14 @@ def load_config(
         ),
         query_log_cleanup_interval_seconds=(
             query_log_cleanup_interval_seconds
+        ),
+        backup_retention_count=(
+            backup_retention_count
+        ),
+        backup_retention_days=(
+            backup_retention_days
+        ),
+        backup_cleanup_interval_seconds=(
+            backup_cleanup_interval_seconds
         ),
     )

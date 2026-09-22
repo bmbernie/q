@@ -452,3 +452,99 @@ def test_db_restore_command_restores_when_offline(
     ) is not None
 
     restored.close()
+
+
+def test_serve_runs_backup_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        paths = resolve_paths(
+            environ={
+                "HOME": str(tmp_path),
+                "XDG_RUNTIME_DIR": str(
+                    tmp_path
+                    / "runtime"
+                ),
+                "XDG_DATA_HOME": str(
+                    tmp_path
+                    / "data"
+                ),
+                "XDG_STATE_HOME": str(
+                    tmp_path
+                    / "state"
+                ),
+            }
+        )
+
+        paths.config_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        paths.config_path.write_text(
+            (
+                "backup_retention_count = 7\n"
+                "backup_retention_days = 30\n"
+                "backup_cleanup_interval_seconds"
+                " = 3600\n"
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+
+        def fake_cleanup(
+            *,
+            backup_dir,
+            retention_count,
+            retention_days,
+            now=None,
+        ):
+            calls.append(
+                (
+                    backup_dir,
+                    retention_count,
+                    retention_days,
+                )
+            )
+
+        monkeypatch.setattr(
+            "q.daemon.cleanup_managed_backups",
+            fake_cleanup,
+        )
+
+        stop_event = asyncio.Event()
+        ready_event = asyncio.Event()
+
+        task = asyncio.create_task(
+            serve(
+                paths=paths,
+                broker=UnusedBroker(),
+                stop_event=stop_event,
+                ready_event=ready_event,
+            )
+        )
+
+        await asyncio.wait_for(
+            ready_event.wait(),
+            timeout=1,
+        )
+
+        assert calls == [
+            (
+                paths.database_path.parent
+                / "backups",
+                7,
+                30,
+            )
+        ]
+
+        stop_event.set()
+
+        await asyncio.wait_for(
+            task,
+            timeout=1,
+        )
+
+    asyncio.run(run())

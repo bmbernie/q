@@ -1154,3 +1154,62 @@ def test_newer_schema_is_refused_without_mutation(
 
     finally:
         raw.close()
+
+
+def test_default_backup_is_marked_managed(
+    tmp_path,
+):
+    from q.backup_retention import (
+        list_managed_backups,
+    )
+
+    store = make_store(tmp_path)
+
+    result = store.backup()
+
+    items = list_managed_backups(
+        tmp_path / "backups"
+    )
+
+    assert len(items) == 1
+    assert items[0].kind == "backup"
+    assert str(items[0].path) == (
+        result["path"]
+    )
+
+    store.close()
+
+
+def test_custom_backup_is_not_marked_managed(
+    tmp_path,
+):
+    from q.backup_retention import (
+        list_managed_backups,
+    )
+
+    store = make_store(tmp_path)
+
+    backup_dir = (
+        tmp_path / "backups"
+    )
+    backup_dir.mkdir(
+        parents=True
+    )
+
+    destination = (
+        backup_dir
+        / "q-20990101-000000.sqlite3"
+    )
+
+    store.backup(
+        destination
+    )
+
+    assert (
+        list_managed_backups(
+            backup_dir
+        )
+        == []
+    )
+
+    store.close()

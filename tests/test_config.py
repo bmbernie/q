@@ -206,3 +206,80 @@ query_log_cleanup_interval_seconds = 0
         ConfigError
     ):
         load_config(path)
+
+
+def test_backup_retention_config(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+backup_retention_count = 12
+backup_retention_days = 45
+backup_cleanup_interval_seconds = 600
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert (
+        config.backup_retention_count
+        == 12
+    )
+    assert (
+        config.backup_retention_days
+        == 45
+    )
+    assert (
+        config
+        .backup_cleanup_interval_seconds
+        == 600
+    )
+
+
+def test_backup_retention_requires_interval(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+backup_retention_count = 1
+backup_retention_days = 0
+backup_cleanup_interval_seconds = 0
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError
+    ):
+        load_config(path)
+
+
+def test_backup_retention_can_be_disabled(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+backup_retention_count = 0
+backup_retention_days = 0
+backup_cleanup_interval_seconds = 0
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert (
+        config.backup_retention_count
+        == 0
+    )
+    assert (
+        config.backup_retention_days
+        == 0
+    )

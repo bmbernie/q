@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .backup_retention import (
+    register_managed_backup,
+)
 from .models import (
     QueryRecord,
     QueryState,
@@ -171,6 +174,7 @@ class QStore:
         destination: Path | None = None,
         *,
         now: datetime | None = None,
+        managed_kind: str | None = None,
     ) -> dict[str, Any]:
         if now is None:
             now = datetime.now(
@@ -178,6 +182,9 @@ class QStore:
             )
 
         if destination is None:
+            if managed_kind is None:
+                managed_kind = "backup"
+
             backup_dir = (
                 self.path.parent
                 / "backups"
@@ -288,6 +295,13 @@ class QStore:
                     "backup destination already "
                     f"exists: {destination}"
                 ) from exc
+
+            if managed_kind is not None:
+                register_managed_backup(
+                    destination,
+                    kind=managed_kind,
+                    created_at=now,
+                )
 
             size = (
                 destination.stat().st_size
@@ -489,7 +503,10 @@ class QStore:
                 )
 
                 current.backup(
-                    rollback_path
+                    rollback_path,
+                    managed_kind=(
+                        "pre-restore"
+                    ),
                 )
 
                 # qd is offline and this is the
@@ -752,7 +769,12 @@ class QStore:
             )
         )
 
-        self.backup(destination)
+        self.backup(
+            destination,
+            managed_kind=(
+                "pre-migrate"
+            ),
+        )
 
         return destination
 

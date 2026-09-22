@@ -8,3 +8,7 @@ log_rotate_archives = 5
 
 query_log_retention_days = 30
 query_log_cleanup_interval_seconds = 3600
+
+backup_retention_count = 20
+backup_retention_days = 90
+backup_cleanup_interval_seconds = 3600

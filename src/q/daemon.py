@@ -10,6 +10,9 @@ import signal
 import sys
 from pathlib import Path
 
+from .backup_retention import (
+    cleanup_managed_backups,
+)
 from .broker import HTTPBroker
 from .config import (
     ConfigError,
@@ -155,6 +158,36 @@ async def _query_log_cleanup_loop(
             return
 
 
+async def _backup_cleanup_loop(
+    *,
+    backup_dir: Path,
+    retention_count: int,
+    retention_days: int,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+) -> None:
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=interval_seconds,
+            )
+
+        except TimeoutError:
+            cleanup_managed_backups(
+                backup_dir=backup_dir,
+                retention_count=(
+                    retention_count
+                ),
+                retention_days=(
+                    retention_days
+                ),
+            )
+
+        else:
+            return
+
+
 async def serve(
     *,
     paths: QPaths,
@@ -173,6 +206,9 @@ async def serve(
     engine: QueryEngine | None = None
     server: IPCServer | None = None
     cleanup_task: (
+        asyncio.Task[None] | None
+    ) = None
+    backup_cleanup_task: (
         asyncio.Task[None] | None
     ) = None
 
@@ -248,6 +284,59 @@ async def serve(
                 )
             )
 
+        backup_cleanup_enabled = (
+            config.backup_retention_count
+            > 0
+            or config.backup_retention_days
+            > 0
+        )
+
+        if backup_cleanup_enabled:
+            backup_dir = (
+                paths.database_path.parent
+                / "backups"
+            )
+
+            cleanup_managed_backups(
+                backup_dir=backup_dir,
+                retention_count=(
+                    config
+                    .backup_retention_count
+                ),
+                retention_days=(
+                    config
+                    .backup_retention_days
+                ),
+            )
+
+            backup_cleanup_task = (
+                asyncio.create_task(
+                    _backup_cleanup_loop(
+                        backup_dir=(
+                            backup_dir
+                        ),
+                        retention_count=(
+                            config
+                            .backup_retention_count
+                        ),
+                        retention_days=(
+                            config
+                            .backup_retention_days
+                        ),
+                        interval_seconds=(
+                            config
+                            .backup_cleanup_interval_seconds
+                        ),
+                        stop_event=(
+                            stop_event
+                        ),
+                    ),
+                    name=(
+                        "q:backup-cleanup"
+                    ),
+                )
+            )
+
         service = QDService(
             store=store,
             engine=engine,
@@ -275,6 +364,15 @@ async def serve(
 
             try:
                 await cleanup_task
+
+            except asyncio.CancelledError:
+                pass
+
+        if backup_cleanup_task is not None:
+            backup_cleanup_task.cancel()
+
+            try:
+                await backup_cleanup_task
 
             except asyncio.CancelledError:
                 pass
