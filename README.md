@@ -75,6 +75,30 @@ The installer:
 - creates ~/.config/q/config.toml if it does not already exist
 - installs and enables qd.service
 - preserves an existing config file
+- safely restarts an already-running qd only after acquiring its restart guard
+- waits for qd IPC readiness before returning
+
+When upgrading an active installation, `install-user.sh` first asks the
+running daemon to acquire a restart guard.
+
+The guard provides an atomic execution boundary:
+
+- new query submissions are rejected while the guard is active
+- queued queries cannot transition to running while the guard is active
+- if any query is already running, guard acquisition fails and the installer
+  exits without restarting qd
+- queued queries remain durable and are scheduled again by normal qd restart
+  recovery
+
+A refused upgrade leaves the existing daemon and running query untouched.
+After the active query finishes, run the installer again.
+
+The guard applies to `install-user.sh`. A direct:
+
+    systemctl --user restart qd.service
+
+does not perform this installer preflight and therefore retains the normal
+restart semantics described below.
 
 Verify:
 
@@ -720,7 +744,12 @@ reconstruct their output from durable per-query NDJSON logs.
 Queued queries are safe to schedule again after restart because they had not yet
 crossed the local execution boundary into an upstream turn.
 
-A query found in running state after daemon restart becomes:
+`install-user.sh` protects this boundary with qd's restart guard. Once the
+guard is acquired, new submissions are refused and queued work cannot become
+running until the guard is released or the daemon restarts. If running work
+already exists, the installer refuses the restart instead.
+
+A query found in running state after an unguarded daemon restart becomes:
 
     indeterminate
 
