@@ -1,0 +1,60 @@
+from pathlib import Path
+
+from q.config import (
+    QConfig,
+    load_config,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_example_config_matches_defaults():
+    config = load_config(
+        ROOT / "config.example.toml"
+    )
+
+    assert config == QConfig()
+
+
+def test_systemd_template_has_required_runtime():
+    text = (
+        ROOT
+        / "systemd"
+        / "qd.service.in"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "WorkingDirectory=@Q_ROOT@"
+        in text
+    )
+    assert (
+        "ExecStart=@Q_ROOT@/.venv/bin/qd serve"
+        in text
+    )
+    assert (
+        "Requires=chatgpt-worker-broker.service"
+        in text
+    )
+    assert "UMask=0077" in text
+
+
+def test_install_script_preserves_existing_config():
+    text = (
+        ROOT
+        / "scripts"
+        / "install-user.sh"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'if [ ! -e "$CONFIG_DIR/config.toml" ]'
+        in text
+    )
+    assert (
+        "systemctl --user enable --now qd.service"
+        in text
+    )
