@@ -95,6 +95,18 @@ Current defaults:
     reasoning_effort = "xhigh"
     tools = "enabled"
     sandbox = "read-only"
+    log_rotate_bytes = 16777216
+    log_rotate_archives = 5
+
+`log_rotate_bytes` controls size-based rotation for the global and
+named-session NDJSON logs. The default is 16 MiB.
+
+`log_rotate_archives` controls how many rotated generations are retained.
+The default is 5.
+
+Set `log_rotate_bytes = 0` to disable size-based rotation.
+
+Per-query logs are not rotated.
 
 The daemon reads configuration at startup.
 
@@ -225,6 +237,25 @@ Per-query event logs:
 Named-session event logs:
 
     ~/.local/state/q/sessions/<SESSION>.ndjson
+
+The global and named-session logs use size-based rotation. With the
+default configuration, each active log rotates at 16 MiB and retains up
+to five archives:
+
+    q.ndjson
+    q.ndjson.1
+    q.ndjson.2
+    ...
+    q.ndjson.5
+
+`.1` is the most recently rotated file. Older generations move toward
+`.5`.
+
+`qd logs` reads retained archives in chronological order before the
+current log. `qd logs -f` continues following across a rollover.
+
+Per-query logs are kept as individual durable query records and are not
+rotated.
 
 Service diagnostics:
 
