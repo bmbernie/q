@@ -123,7 +123,12 @@ class QStore:
             "PRAGMA synchronous = FULL"
         )
 
-        self._initialize()
+        try:
+            self._initialize()
+
+        except Exception:
+            self._db.close()
+            raise
 
     def close(self) -> None:
         self._db.close()
@@ -442,6 +447,185 @@ class QStore:
         finally:
             db.close()
 
+    @staticmethod
+    def _failed_restore_path(
+        *,
+        live_path: Path,
+        now: datetime,
+    ) -> Path:
+        backup_dir = (
+            live_path.parent
+            / "backups"
+        )
+
+        backup_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+            mode=0o700,
+        )
+        backup_dir.chmod(0o700)
+
+        return (
+            backup_dir
+            / (
+                "failed-restore-"
+                + now.strftime(
+                    "%Y%m%d-%H%M%S-%f"
+                )
+                + ".sqlite3"
+            )
+        )
+
+    @staticmethod
+    def _preserve_failed_restore(
+        *,
+        live_path: Path,
+        failed_path: Path,
+    ) -> None:
+        if failed_path.exists():
+            raise StateStoreError(
+                "failed-restore diagnostic "
+                "destination already exists: "
+                f"{failed_path}"
+            )
+
+        os.replace(
+            live_path,
+            failed_path,
+        )
+        os.chmod(
+            failed_path,
+            0o600,
+        )
+
+        for suffix in (
+            "-wal",
+            "-shm",
+        ):
+            source = Path(
+                str(live_path)
+                + suffix
+            )
+
+            if not source.exists():
+                continue
+
+            destination = Path(
+                str(failed_path)
+                + suffix
+            )
+
+            if destination.exists():
+                raise StateStoreError(
+                    "failed-restore diagnostic "
+                    "sidecar already exists: "
+                    f"{destination}"
+                )
+
+            os.replace(
+                source,
+                destination,
+            )
+            os.chmod(
+                destination,
+                0o600,
+            )
+
+    @classmethod
+    def _restore_rollback_snapshot(
+        cls,
+        *,
+        rollback_path: Path,
+        live_path: Path,
+    ) -> dict[str, Any]:
+        cls._validate_snapshot(
+            rollback_path
+        )
+
+        fd, raw_temp = tempfile.mkstemp(
+            dir=live_path.parent,
+            prefix=".q-rollback.",
+            suffix=".sqlite3.tmp",
+        )
+        os.close(fd)
+
+        temp_path = Path(raw_temp)
+
+        try:
+            os.chmod(
+                temp_path,
+                0o600,
+            )
+
+            source = sqlite3.connect(
+                rollback_path,
+                timeout=5.0,
+            )
+            target = sqlite3.connect(
+                temp_path,
+                timeout=5.0,
+            )
+
+            try:
+                source.backup(target)
+
+                target.execute(
+                    "PRAGMA journal_mode = DELETE"
+                )
+
+            finally:
+                target.close()
+                source.close()
+
+            cls._validate_snapshot(
+                temp_path
+            )
+
+            for suffix in (
+                "-wal",
+                "-shm",
+            ):
+                Path(
+                    str(live_path)
+                    + suffix
+                ).unlink(
+                    missing_ok=True
+                )
+
+            os.replace(
+                temp_path,
+                live_path,
+            )
+            os.chmod(
+                live_path,
+                0o600,
+            )
+
+            restored = cls(
+                live_path
+            )
+
+            try:
+                health = (
+                    restored.quick_check()
+                )
+
+            finally:
+                restored.close()
+
+            if health["ok"] is not True:
+                raise StateStoreError(
+                    "automatic rollback "
+                    "failed quick_check"
+                )
+
+            return health
+
+        finally:
+            temp_path.unlink(
+                missing_ok=True
+            )
+
     @classmethod
     def restore_backup(
         cls,
@@ -601,26 +785,121 @@ class QStore:
                 0o600,
             )
 
-            restored = cls(
-                live_path
-            )
-
             try:
-                health = (
-                    restored.quick_check()
-                )
-                restored_schema_version = (
-                    restored._schema_version()
+                restored = cls(
+                    live_path
                 )
 
-            finally:
-                restored.close()
+                try:
+                    health = (
+                        restored.quick_check()
+                    )
+                    restored_schema_version = (
+                        restored._schema_version()
+                    )
 
-            if health["ok"] is not True:
+                finally:
+                    restored.close()
+
+                if health["ok"] is not True:
+                    raise StateStoreError(
+                        "restored database failed "
+                        "post-restore quick_check: "
+                        + "; ".join(
+                            str(item)
+                            for item
+                            in health[
+                                "quick_check"
+                            ]
+                        )
+                    )
+
+            except Exception as exc:
+                failed_path = (
+                    cls._failed_restore_path(
+                        live_path=live_path,
+                        now=now,
+                    )
+                )
+
+                preservation_error = None
+
+                try:
+                    cls._preserve_failed_restore(
+                        live_path=live_path,
+                        failed_path=failed_path,
+                    )
+
+                except Exception as preserve_exc:
+                    preservation_error = (
+                        preserve_exc
+                    )
+
+                rollback_error = None
+                rollback_succeeded = False
+
+                if rollback_path is not None:
+                    try:
+                        cls._restore_rollback_snapshot(
+                            rollback_path=(
+                                rollback_path
+                            ),
+                            live_path=live_path,
+                        )
+
+                    except Exception as rollback_exc:
+                        rollback_error = (
+                            rollback_exc
+                        )
+
+                    else:
+                        rollback_succeeded = True
+
+                parts = [
+                    (
+                        "database restore failed "
+                        "after live replacement: "
+                        f"{exc}"
+                    )
+                ]
+
+                if failed_path.exists():
+                    parts.append(
+                        "failed restored image "
+                        "preserved at "
+                        f"{failed_path}"
+                    )
+
+                elif preservation_error is not None:
+                    parts.append(
+                        "failed-image preservation "
+                        "failed: "
+                        f"{preservation_error}"
+                    )
+
+                if rollback_succeeded:
+                    parts.append(
+                        "automatic rollback "
+                        "succeeded from "
+                        f"{rollback_path}"
+                    )
+
+                elif rollback_path is None:
+                    parts.append(
+                        "no pre-restore rollback "
+                        "was available"
+                    )
+
+                else:
+                    parts.append(
+                        "automatic rollback also "
+                        "failed: "
+                        f"{rollback_error}"
+                    )
+
                 raise StateStoreError(
-                    "restored database failed "
-                    "post-restore quick_check"
-                )
+                    "; ".join(parts)
+                ) from exc
 
             return {
                 "ok": True,

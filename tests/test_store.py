@@ -1483,3 +1483,325 @@ def test_restore_rejects_newer_schema_without_replacing_live(
     assert not (
         tmp_path / "backups"
     ).exists()
+
+
+def test_restore_post_replace_failure_rolls_back_and_preserves_failed_image(
+    tmp_path,
+    monkeypatch,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = tmp_path / "source.sqlite3"
+
+    live = QStore(live_path)
+    live.create_session(
+        session_name="live-only",
+        backend_thread_id="thread-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+    live.close()
+
+    source = QStore(source_path)
+    source.create_session(
+        session_name="source-only",
+        backend_thread_id="thread-source",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+    source.close()
+
+    original_quick_check = (
+        QStore.quick_check
+    )
+
+    def forced_quick_check(self):
+        result = original_quick_check(
+            self
+        )
+
+        if (
+            self.get_session(
+                "source-only"
+            )
+            is not None
+        ):
+            return {
+                **result,
+                "ok": False,
+                "quick_check": [
+                    "forced failure"
+                ],
+            }
+
+        return result
+
+    monkeypatch.setattr(
+        QStore,
+        "quick_check",
+        forced_quick_check,
+    )
+
+    with pytest.raises(
+        StateStoreError,
+        match=(
+            "automatic rollback "
+            "succeeded"
+        ),
+    ):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+    restored = QStore(live_path)
+
+    assert (
+        restored.get_session(
+            "live-only"
+        )
+        is not None
+    )
+    assert (
+        restored.get_session(
+            "source-only"
+        )
+        is None
+    )
+
+    restored.close()
+
+    failed = list(
+        (
+            tmp_path / "backups"
+        ).glob(
+            "failed-restore-*.sqlite3"
+        )
+    )
+
+    assert len(failed) == 1
+
+    db = sqlite3.connect(
+        failed[0]
+    )
+
+    try:
+        names = {
+            row[0]
+            for row in db.execute(
+                """
+                SELECT session_name
+                FROM sessions
+                """
+            ).fetchall()
+        }
+
+    finally:
+        db.close()
+
+    assert "source-only" in names
+
+
+def test_restore_migration_failure_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = (
+        tmp_path
+        / "source-v1.sqlite3"
+    )
+
+    live = QStore(live_path)
+    live.create_session(
+        session_name="live-only",
+        backend_thread_id="thread-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+    live.close()
+
+    _create_v1_database(
+        source_path
+    )
+
+    def fail_migration(self):
+        raise StateStoreError(
+            "forced migration failure"
+        )
+
+    monkeypatch.setattr(
+        QStore,
+        "_migrate_1_to_2",
+        fail_migration,
+    )
+
+    with pytest.raises(
+        StateStoreError,
+        match=(
+            "automatic rollback "
+            "succeeded"
+        ),
+    ):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+    restored = QStore(live_path)
+
+    assert (
+        restored.get_session(
+            "live-only"
+        )
+        is not None
+    )
+
+    restored.close()
+
+    assert len(
+        list(
+            (
+                tmp_path
+                / "backups"
+            ).glob(
+                "failed-restore-"
+                "*.sqlite3"
+            )
+        )
+    ) == 1
+
+
+def test_restore_reports_rollback_failure_and_keeps_diagnostic(
+    tmp_path,
+    monkeypatch,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = tmp_path / "source.sqlite3"
+
+    live = QStore(live_path)
+    live.create_session(
+        session_name="live-only",
+        backend_thread_id="thread-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+    live.close()
+
+    source = QStore(source_path)
+    source.create_session(
+        session_name="source-only",
+        backend_thread_id="thread-source",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+    source.close()
+
+    original_quick_check = (
+        QStore.quick_check
+    )
+
+    def forced_quick_check(self):
+        result = original_quick_check(
+            self
+        )
+
+        if (
+            self.get_session(
+                "source-only"
+            )
+            is not None
+        ):
+            return {
+                **result,
+                "ok": False,
+                "quick_check": [
+                    "forced failure"
+                ],
+            }
+
+        return result
+
+    monkeypatch.setattr(
+        QStore,
+        "quick_check",
+        forced_quick_check,
+    )
+
+    def fail_rollback(
+        cls,
+        *,
+        rollback_path,
+        live_path,
+    ):
+        raise StateStoreError(
+            "forced rollback failure"
+        )
+
+    monkeypatch.setattr(
+        QStore,
+        "_restore_rollback_snapshot",
+        classmethod(
+            fail_rollback
+        ),
+    )
+
+    with pytest.raises(
+        StateStoreError,
+    ) as caught:
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+    message = str(
+        caught.value
+    )
+
+    assert (
+        "forced failure"
+        in message
+    )
+    assert (
+        "automatic rollback also failed"
+        in message
+    )
+    assert (
+        "forced rollback failure"
+        in message
+    )
+    assert (
+        "failed restored image "
+        "preserved at"
+        in message
+    )
+
+    failed = list(
+        (
+            tmp_path / "backups"
+        ).glob(
+            "failed-restore-*.sqlite3"
+        )
+    )
+
+    assert len(failed) == 1
+
+    rollback = list(
+        (
+            tmp_path / "backups"
+        ).glob(
+            "pre-restore-*.sqlite3"
+        )
+    )
+
+    assert len(rollback) == 1
