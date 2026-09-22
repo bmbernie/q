@@ -103,9 +103,7 @@ class QueryEngine:
         session_name: str | None = None,
         model: str = "gpt-5.6-luna",
         reasoning_effort: str = "xhigh",
-        tools_policy: ToolsPolicy = (
-            ToolsPolicy.ENABLED
-        ),
+        tools_policy: ToolsPolicy | None = None,
         sandbox: str = "read-only",
         detached: bool = False,
         stdout_attached: bool = True,
@@ -121,6 +119,10 @@ class QueryEngine:
             )
 
         session_log_path = None
+        effective_tools_policy = (
+            tools_policy
+            or ToolsPolicy.ENABLED
+        )
 
         if session_name is not None:
             session = self.store.get_session(
@@ -138,7 +140,7 @@ class QueryEngine:
                             reasoning_effort
                         ),
                         tools_policy=(
-                            tools_policy
+                            effective_tools_policy
                         ),
                     )
                 )
@@ -152,13 +154,19 @@ class QueryEngine:
                     f"{session.state.value}"
                 )
 
-            elif (
-                session.tools_policy
-                != tools_policy
-            ):
-                raise ValueError(
-                    "tools policy is fixed for "
-                    "an existing session"
+            else:
+                if (
+                    tools_policy is not None
+                    and session.tools_policy
+                    != tools_policy
+                ):
+                    raise ValueError(
+                        "tools policy is fixed for "
+                        "an existing session"
+                    )
+
+                effective_tools_policy = (
+                    session.tools_policy
                 )
 
             session_log_path = str(
@@ -184,7 +192,9 @@ class QueryEngine:
             reasoning_effort=(
                 reasoning_effort
             ),
-            tools_policy=tools_policy,
+            tools_policy=(
+                effective_tools_policy
+            ),
             prompt_metadata={
                 "input": input_text,
                 "cwd": cwd,

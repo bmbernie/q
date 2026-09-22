@@ -8,7 +8,10 @@ from q.ipc import (
     IPCRemoteError,
     IPCServer,
 )
-from q.models import QueryState
+from q.models import (
+    QueryState,
+    ToolsPolicy,
+)
 from q.service import QDService
 from q.store import QStore
 
@@ -652,6 +655,77 @@ def test_unknown_query_returns_not_found(
             assert (
                 caught.value.code
                 == "not_found"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+
+def test_existing_session_inherits_tools_policy(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            first = await client.request(
+                "submit",
+                {
+                    "input": "first-disabled",
+                    "cwd": "/tmp",
+                    "session_name": "locked",
+                    "tools": "disabled",
+                },
+            )
+
+            assert (
+                first["tools_policy"]
+                == "disabled"
+            )
+
+            second = await client.request(
+                "submit",
+                {
+                    "input": "second-inherit",
+                    "cwd": "/tmp",
+                    "session_name": "locked",
+                },
+            )
+
+            assert (
+                second["tools_policy"]
+                == "disabled"
+            )
+
+            assert (
+                broker.calls[0][
+                    "tools_policy"
+                ]
+                == ToolsPolicy.DISABLED
+            )
+
+            # Existing Codex threads do not receive
+            # a tools override on resume.
+            assert (
+                broker.calls[1][
+                    "tools_policy"
+                ]
+                is None
             )
 
         finally:

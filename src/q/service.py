@@ -348,20 +348,21 @@ class QDService:
         tools_raw = _optional_string(
             params,
             "tools",
-            default=(
-                ToolsPolicy.ENABLED.value
-            ),
+            default=None,
         )
 
-        try:
-            tools_policy = ToolsPolicy(
-                tools_raw
-            )
-        except ValueError as exc:
-            raise ValueError(
-                "tools must be "
-                "'enabled' or 'disabled'"
-            ) from exc
+        if tools_raw is None:
+            tools_policy = None
+        else:
+            try:
+                tools_policy = ToolsPolicy(
+                    tools_raw
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "tools must be "
+                    "'enabled' or 'disabled'"
+                ) from exc
 
         sandbox = _optional_string(
             params,
