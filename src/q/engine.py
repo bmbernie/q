@@ -1,0 +1,1031 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+)
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .broker import (
+    Broker,
+    BrokerHTTPError,
+    BrokerProtocolError,
+)
+from .models import (
+    QueryRecord,
+    QueryState,
+    SessionState,
+    ToolsPolicy,
+)
+from .store import QStore
+
+
+_TERMINAL_STATES = {
+    QueryState.COMPLETED,
+    QueryState.FAILED,
+    QueryState.INDETERMINATE,
+    QueryState.CANCELLED,
+}
+
+
+def _timestamp() -> str:
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+@dataclass(slots=True)
+class _Runtime:
+    condition: asyncio.Condition = field(
+        default_factory=asyncio.Condition
+    )
+    events: list[dict[str, Any]] = field(
+        default_factory=list
+    )
+    done: bool = False
+    interrupt_sent: bool = False
+
+
+class QueryEngine:
+    def __init__(
+        self,
+        *,
+        store: QStore,
+        broker: Broker,
+        state_dir: Path,
+        query_id_factory: Callable[[], str]
+        | None = None,
+    ):
+        self.store = store
+        self.broker = broker
+        self.state_dir = (
+            state_dir.expanduser()
+        )
+
+        self._query_id_factory = (
+            query_id_factory
+            or (
+                lambda: (
+                    "q-"
+                    + uuid.uuid4().hex
+                )
+            )
+        )
+
+        self._tasks: dict[
+            str,
+            asyncio.Task[None],
+        ] = {}
+
+        self._runtimes: dict[
+            str,
+            _Runtime,
+        ] = {}
+
+        self._session_locks: dict[
+            str,
+            asyncio.Lock,
+        ] = {}
+
+        self._closing = False
+
+    async def submit(
+        self,
+        *,
+        input_text: str,
+        cwd: str,
+        session_name: str | None = None,
+        model: str = "gpt-5.6-luna",
+        reasoning_effort: str = "xhigh",
+        tools_policy: ToolsPolicy = (
+            ToolsPolicy.ENABLED
+        ),
+        sandbox: str = "read-only",
+        detached: bool = False,
+        stdout_attached: bool = True,
+    ) -> QueryRecord:
+        if self._closing:
+            raise RuntimeError(
+                "query engine is closing"
+            )
+
+        if not input_text:
+            raise ValueError(
+                "input_text must not be empty"
+            )
+
+        session_log_path = None
+
+        if session_name is not None:
+            session = self.store.get_session(
+                session_name
+            )
+
+            if session is None:
+                session = (
+                    self.store.create_session(
+                        session_name=(
+                            session_name
+                        ),
+                        model=model,
+                        reasoning_effort=(
+                            reasoning_effort
+                        ),
+                        tools_policy=(
+                            tools_policy
+                        ),
+                    )
+                )
+
+            elif session.state in {
+                SessionState.ARCHIVED,
+                SessionState.BROKEN,
+            }:
+                raise RuntimeError(
+                    "session is not available: "
+                    f"{session.state.value}"
+                )
+
+            elif (
+                session.tools_policy
+                != tools_policy
+            ):
+                raise ValueError(
+                    "tools policy is fixed for "
+                    "an existing session"
+                )
+
+            session_log_path = str(
+                self.state_dir
+                / "sessions"
+                / f"{session_name}.ndjson"
+            )
+
+        query_id = (
+            self._query_id_factory()
+        )
+
+        log_path = str(
+            self.state_dir
+            / "queries"
+            / f"{query_id}.ndjson"
+        )
+
+        query = self.store.create_query(
+            query_id=query_id,
+            session_name=session_name,
+            model=model,
+            reasoning_effort=(
+                reasoning_effort
+            ),
+            tools_policy=tools_policy,
+            prompt_metadata={
+                "input": input_text,
+                "cwd": cwd,
+                "sandbox": sandbox,
+            },
+            log_path=log_path,
+            session_log_path=(
+                session_log_path
+            ),
+            detached=detached,
+            stdout_attached=(
+                stdout_attached
+            ),
+        )
+
+        runtime = _Runtime()
+        self._runtimes[
+            query_id
+        ] = runtime
+
+        task = asyncio.create_task(
+            self._run(
+                query_id=query_id,
+            ),
+            name=f"q:{query_id}",
+        )
+
+        self._tasks[
+            query_id
+        ] = task
+
+        task.add_done_callback(
+            lambda _task, qid=query_id: (
+                self._tasks.pop(
+                    qid,
+                    None,
+                )
+            )
+        )
+
+        return query
+
+    async def wait(
+        self,
+        query_id: str,
+    ) -> QueryRecord:
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if runtime is not None:
+            async with runtime.condition:
+                await runtime.condition.wait_for(
+                    lambda: runtime.done
+                )
+
+        query = self.store.get_query(
+            query_id
+        )
+
+        if query is None:
+            raise KeyError(
+                query_id
+            )
+
+        return query
+
+    async def watch(
+        self,
+        query_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if runtime is None:
+            raise KeyError(
+                query_id
+            )
+
+        index = 0
+
+        while True:
+            async with runtime.condition:
+                await runtime.condition.wait_for(
+                    lambda: (
+                        index
+                        < len(runtime.events)
+                        or runtime.done
+                    )
+                )
+
+                batch = list(
+                    runtime.events[
+                        index:
+                    ]
+                )
+                index = len(
+                    runtime.events
+                )
+                done = runtime.done
+
+            for event in batch:
+                yield event
+
+            if done and (
+                index
+                >= len(runtime.events)
+            ):
+                return
+
+    async def cancel(
+        self,
+        query_id: str,
+    ) -> QueryRecord:
+        query = self.store.get_query(
+            query_id
+        )
+
+        if query is None:
+            raise KeyError(
+                query_id
+            )
+
+        if query.state in _TERMINAL_STATES:
+            return query
+
+        query = (
+            self.store.mark_cancel_requested(
+                query_id
+            )
+        )
+
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if query.state == QueryState.QUEUED:
+            query = (
+                self.store.transition_query(
+                    query_id,
+                    QueryState.CANCELLED,
+                )
+            )
+
+            await self._emit(
+                query_id,
+                {
+                    "type": "state",
+                    "state": (
+                        QueryState.CANCELLED.value
+                    ),
+                },
+            )
+
+            task = self._tasks.get(
+                query_id
+            )
+
+            if task is not None:
+                task.cancel()
+
+            return query
+
+        if (
+            query.state
+            == QueryState.RUNNING
+            and query.backend_thread_id
+            is not None
+            and query.upstream_turn_id
+            is not None
+            and runtime is not None
+            and not runtime.interrupt_sent
+        ):
+            await self.broker.interrupt(
+                thread_id=(
+                    query.backend_thread_id
+                ),
+                turn_id=(
+                    query.upstream_turn_id
+                ),
+            )
+
+            runtime.interrupt_sent = True
+
+        updated = self.store.get_query(
+            query_id
+        )
+
+        assert updated is not None
+        return updated
+
+    async def aclose(self) -> None:
+        self._closing = True
+
+        tasks = list(
+            self._tasks.values()
+        )
+
+        for task in tasks:
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(
+                *tasks,
+                return_exceptions=True,
+            )
+
+    async def _run(
+        self,
+        *,
+        query_id: str,
+    ) -> None:
+        query = self.store.get_query(
+            query_id
+        )
+
+        assert query is not None
+
+        lock = None
+
+        if query.session_name is not None:
+            lock = (
+                self._session_locks
+                .setdefault(
+                    query.session_name,
+                    asyncio.Lock(),
+                )
+            )
+
+        try:
+            if lock is None:
+                await self._execute(
+                    query_id
+                )
+
+            else:
+                async with lock:
+                    current = (
+                        self.store.get_query(
+                            query_id
+                        )
+                    )
+
+                    if (
+                        current is not None
+                        and current.state
+                        == QueryState.QUEUED
+                    ):
+                        await self._execute(
+                            query_id
+                        )
+
+        except asyncio.CancelledError:
+            current = self.store.get_query(
+                query_id
+            )
+
+            if (
+                current is not None
+                and current.state
+                == QueryState.RUNNING
+            ):
+                await self._mark_indeterminate(
+                    query_id,
+                    error_type=(
+                        "daemon_shutdown"
+                    ),
+                    error_message=(
+                        "query execution was "
+                        "interrupted locally"
+                    ),
+                )
+
+            raise
+
+        finally:
+            await self._finish_runtime(
+                query_id
+            )
+
+    async def _execute(
+        self,
+        query_id: str,
+    ) -> None:
+        query = self.store.get_query(
+            query_id
+        )
+
+        assert query is not None
+
+        if query.state != QueryState.QUEUED:
+            return
+
+        query = self.store.transition_query(
+            query_id,
+            QueryState.RUNNING,
+        )
+
+        await self._emit(
+            query_id,
+            {
+                "type": "state",
+                "state": (
+                    QueryState.RUNNING.value
+                ),
+            },
+        )
+
+        metadata = query.prompt_metadata
+        session = None
+        thread_id = None
+
+        if query.session_name is not None:
+            session = self.store.get_session(
+                query.session_name
+            )
+
+            if session is None:
+                await self._fail(
+                    query_id,
+                    error_type=(
+                        "session_missing"
+                    ),
+                    error_message=(
+                        "session disappeared "
+                        "before execution"
+                    ),
+                )
+                return
+
+            if session.state in {
+                SessionState.ARCHIVED,
+                SessionState.BROKEN,
+            }:
+                await self._fail(
+                    query_id,
+                    error_type=(
+                        "session_unavailable"
+                    ),
+                    error_message=(
+                        "session is "
+                        f"{session.state.value}"
+                    ),
+                )
+                return
+
+            thread_id = (
+                session.backend_thread_id
+            )
+
+            if thread_id is not None:
+                query = (
+                    self.store.set_query_backend(
+                        query_id,
+                        backend_thread_id=(
+                            thread_id
+                        ),
+                    )
+                )
+
+        ephemeral = (
+            query.session_name is None
+        )
+
+        tools_for_request = (
+            query.tools_policy
+            if thread_id is None
+            else None
+        )
+
+        terminal_seen = False
+
+        try:
+            async for event in (
+                self.broker.stream_query(
+                    input_text=str(
+                        metadata["input"]
+                    ),
+                    cwd=str(
+                        metadata["cwd"]
+                    ),
+                    model=query.model,
+                    reasoning_effort=(
+                        query.reasoning_effort
+                    ),
+                    thread_id=thread_id,
+                    tools_policy=(
+                        tools_for_request
+                    ),
+                    ephemeral=ephemeral,
+                    sandbox=str(
+                        metadata["sandbox"]
+                    ),
+                )
+            ):
+                event_type = event.get(
+                    "type"
+                )
+
+                if event_type == "thread":
+                    await self._handle_thread(
+                        query_id,
+                        event,
+                        expected_thread_id=(
+                            thread_id
+                        ),
+                    )
+
+                elif event_type == "turn":
+                    await self._handle_turn(
+                        query_id,
+                        event,
+                    )
+
+                await self._emit(
+                    query_id,
+                    {
+                        "type": "broker",
+                        "event": event,
+                    },
+                )
+
+                if event_type == "delta":
+                    await self._emit(
+                        query_id,
+                        {
+                            "type": "delta",
+                            "delta": event.get(
+                                "delta",
+                                "",
+                            ),
+                        },
+                    )
+
+                if event_type == "completed":
+                    terminal_seen = True
+                    await self._complete(
+                        query_id,
+                        event,
+                    )
+                    break
+
+            if not terminal_seen:
+                await self._mark_indeterminate(
+                    query_id,
+                    error_type=(
+                        "stream_ended"
+                    ),
+                    error_message=(
+                        "broker stream ended "
+                        "without completion"
+                    ),
+                )
+
+        except BrokerHTTPError as exc:
+            if exc.status_code >= 500:
+                await self._mark_indeterminate(
+                    query_id,
+                    error_type=exc.code,
+                    error_message=(
+                        exc.message
+                    ),
+                )
+            else:
+                await self._fail(
+                    query_id,
+                    error_type=exc.code,
+                    error_message=(
+                        exc.message
+                    ),
+                )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            await self._mark_indeterminate(
+                query_id,
+                error_type=(
+                    type(exc).__name__
+                ),
+                error_message=str(exc),
+            )
+
+    async def _handle_thread(
+        self,
+        query_id: str,
+        event: dict[str, Any],
+        *,
+        expected_thread_id: (
+            str | None
+        ),
+    ) -> None:
+        thread_id = event.get(
+            "thread_id"
+        )
+
+        if (
+            not isinstance(
+                thread_id,
+                str,
+            )
+            or not thread_id
+        ):
+            raise BrokerProtocolError(
+                "thread event missing "
+                "thread_id"
+            )
+
+        if (
+            expected_thread_id
+            is not None
+            and thread_id
+            != expected_thread_id
+        ):
+            raise BrokerProtocolError(
+                "broker resumed unexpected "
+                "thread"
+            )
+
+        query = self.store.set_query_backend(
+            query_id,
+            backend_thread_id=thread_id,
+        )
+
+        if query.session_name is None:
+            return
+
+        session = self.store.get_session(
+            query.session_name
+        )
+
+        if session is None:
+            raise BrokerProtocolError(
+                "query session disappeared"
+            )
+
+        if (
+            session.backend_thread_id
+            is None
+        ):
+            self.store.bind_session_thread(
+                query.session_name,
+                thread_id,
+            )
+
+        elif (
+            session.backend_thread_id
+            != thread_id
+        ):
+            raise BrokerProtocolError(
+                "session thread changed"
+            )
+
+    async def _handle_turn(
+        self,
+        query_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        turn_id = event.get(
+            "turn_id"
+        )
+
+        if (
+            not isinstance(
+                turn_id,
+                str,
+            )
+            or not turn_id
+        ):
+            raise BrokerProtocolError(
+                "turn event missing turn_id"
+            )
+
+        query = self.store.set_query_backend(
+            query_id,
+            upstream_turn_id=turn_id,
+        )
+
+        runtime = self._runtimes[
+            query_id
+        ]
+
+        if (
+            query.cancel_requested_at
+            is not None
+            and query.backend_thread_id
+            is not None
+            and not runtime.interrupt_sent
+        ):
+            await self.broker.interrupt(
+                thread_id=(
+                    query.backend_thread_id
+                ),
+                turn_id=turn_id,
+            )
+
+            runtime.interrupt_sent = True
+
+    async def _complete(
+        self,
+        query_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        status = str(
+            event.get(
+                "status",
+                "failed",
+            )
+        )
+
+        if status == "completed":
+            state = QueryState.COMPLETED
+            error_type = None
+            error_message = None
+
+        elif status in {
+            "cancelled",
+            "canceled",
+            "interrupted",
+        }:
+            state = QueryState.CANCELLED
+            error_type = None
+            error_message = None
+
+        else:
+            state = QueryState.FAILED
+            error_type = (
+                f"upstream_{status}"
+            )
+
+            raw_error = event.get(
+                "error"
+            )
+
+            if raw_error is None:
+                error_message = status
+            elif isinstance(
+                raw_error,
+                str,
+            ):
+                error_message = raw_error
+            else:
+                error_message = (
+                    json.dumps(
+                        raw_error,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+
+        current = self.store.get_query(
+            query_id
+        )
+
+        if (
+            current is None
+            or current.state
+            in _TERMINAL_STATES
+        ):
+            return
+
+        self.store.transition_query(
+            query_id,
+            state,
+            error_type=error_type,
+            error_message=(
+                error_message
+            ),
+        )
+
+        await self._emit(
+            query_id,
+            {
+                "type": "state",
+                "state": state.value,
+            },
+        )
+
+    async def _fail(
+        self,
+        query_id: str,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        current = self.store.get_query(
+            query_id
+        )
+
+        if (
+            current is None
+            or current.state
+            in _TERMINAL_STATES
+        ):
+            return
+
+        self.store.transition_query(
+            query_id,
+            QueryState.FAILED,
+            error_type=error_type,
+            error_message=(
+                error_message
+            ),
+        )
+
+        await self._emit(
+            query_id,
+            {
+                "type": "state",
+                "state": (
+                    QueryState.FAILED.value
+                ),
+                "error_type": error_type,
+                "error_message": (
+                    error_message
+                ),
+            },
+        )
+
+    async def _mark_indeterminate(
+        self,
+        query_id: str,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        current = self.store.get_query(
+            query_id
+        )
+
+        if (
+            current is None
+            or current.state
+            in _TERMINAL_STATES
+        ):
+            return
+
+        self.store.transition_query(
+            query_id,
+            QueryState.INDETERMINATE,
+            error_type=error_type,
+            error_message=(
+                error_message
+            ),
+        )
+
+        if current.session_name is not None:
+            self.store.mark_session_broken(
+                current.session_name
+            )
+
+        await self._emit(
+            query_id,
+            {
+                "type": "state",
+                "state": (
+                    QueryState.INDETERMINATE.value
+                ),
+                "error_type": error_type,
+                "error_message": (
+                    error_message
+                ),
+            },
+        )
+
+    async def _emit(
+        self,
+        query_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        query = self.store.get_query(
+            query_id
+        )
+
+        if query is None:
+            return
+
+        record = {
+            "timestamp": _timestamp(),
+            "query_id": query_id,
+            **event,
+        }
+
+        encoded = (
+            json.dumps(
+                record,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+        for raw_path in (
+            query.log_path,
+            query.session_log_path,
+        ):
+            if raw_path is None:
+                continue
+
+            path = Path(raw_path)
+            path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            with path.open(
+                "a",
+                encoding="utf-8",
+            ) as stream:
+                stream.write(encoded)
+
+        self.store.mark_stream_activity(
+            query_id
+        )
+
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if runtime is None:
+            return
+
+        async with runtime.condition:
+            runtime.events.append(
+                record
+            )
+            runtime.condition.notify_all()
+
+    async def _finish_runtime(
+        self,
+        query_id: str,
+    ) -> None:
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if runtime is None:
+            return
+
+        async with runtime.condition:
+            runtime.done = True
+            runtime.condition.notify_all()

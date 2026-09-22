@@ -439,6 +439,74 @@ class QStore:
         assert session is not None
         return session
 
+    def mark_session_broken(
+        self,
+        session_name: str,
+    ) -> SessionRecord:
+        now = _now()
+
+        with self._db:
+            cursor = self._db.execute(
+                """
+                UPDATE sessions
+                SET
+                    state = ?,
+                    last_used_at = ?
+                WHERE session_name = ?
+                """,
+                (
+                    SessionState.BROKEN.value,
+                    _iso(now),
+                    session_name,
+                ),
+            )
+
+        if cursor.rowcount != 1:
+            raise KeyError(
+                session_name
+            )
+
+        session = self.get_session(
+            session_name
+        )
+
+        assert session is not None
+        return session
+
+    def mark_session_broken(
+        self,
+        session_name: str,
+    ) -> SessionRecord:
+        now = _now()
+
+        with self._db:
+            cursor = self._db.execute(
+                """
+                UPDATE sessions
+                SET
+                    state = ?,
+                    last_used_at = ?
+                WHERE session_name = ?
+                """,
+                (
+                    SessionState.BROKEN.value,
+                    _iso(now),
+                    session_name,
+                ),
+            )
+
+        if cursor.rowcount != 1:
+            raise KeyError(
+                session_name
+            )
+
+        session = self.get_session(
+            session_name
+        )
+
+        assert session is not None
+        return session
+
     def archive_session(
         self,
         session_name: str,
@@ -898,3 +966,13 @@ class QStore:
                 row["last_stream_at"]
             ),
         )
+
+
+# Session recovery deliberately uses an explicit broken state.
+# A session whose upstream state is uncertain must not silently
+# accept another turn until qd reconciles it.
+
+
+# Session recovery deliberately uses an explicit broken state.
+# A session whose upstream state is uncertain must not silently
+# accept another turn until qd reconciles it.
