@@ -302,6 +302,7 @@ local q installation and the running daemon and broker.
 
 The report includes:
 
+- q/qd client and daemon version compatibility
 - configuration validity and active defaults
 - config file type and permissions
 - SQLite database type and permissions
@@ -319,6 +320,25 @@ A healthy deployment reports:
     "ok": true
 
 and exits with status 0.
+
+The `version` section compares the package version loaded by the `qd`
+client process with the package version loaded by the running daemon:
+
+    "version": {
+      "client": "0.8.0",
+      "daemon": "0.8.0",
+      "match": true,
+      "ok": true
+    }
+
+If q is upgraded on disk but qd has not yet been restarted, the versions
+can differ. In that case `match` and the version check's `ok` field are
+false, the rest of the diagnostics are still reported, and `qd doctor`
+exits with status 1.
+
+Restarting qd loads the newly installed package version:
+
+    systemctl --user restart qd.service
 
 If any required diagnostic fails, `qd doctor` still attempts to emit the
 complete report, sets:
