@@ -1287,3 +1287,55 @@ def test_follow_reports_unretained_log(
             store.close()
 
     asyncio.run(run())
+
+
+
+def test_db_check_reports_store_health(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "db_check"
+            )
+
+            assert result["ok"] is True
+            assert (
+                result["quick_check"]
+                == ["ok"]
+            )
+            assert (
+                result["journal_mode"]
+                == "wal"
+            )
+            assert (
+                result["synchronous"]
+                == 2
+            )
+            assert (
+                result["foreign_keys"]
+                is True
+            )
+            assert (
+                result["busy_timeout"]
+                == 5000
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())

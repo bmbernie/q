@@ -267,6 +267,13 @@ class QDService:
                 )
                 return
 
+            if request.method == "db_check":
+                yield IPCFrame.result_frame(
+                    request.request_id,
+                    self.store.quick_check(),
+                )
+                return
+
             if request.method == "respond_interaction":
                 yield await self._respond_interaction(
                     request

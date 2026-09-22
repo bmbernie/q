@@ -96,21 +96,72 @@ class QStore:
         )
 
         self._db = sqlite3.connect(
-            self.path
+            self.path,
+            timeout=5.0,
         )
         self._db.row_factory = sqlite3.Row
 
+        # Keep the durability/concurrency policy
+        # explicit instead of relying on Python
+        # or SQLite connection defaults.
         self._db.execute(
             "PRAGMA foreign_keys = ON"
         )
         self._db.execute(
+            "PRAGMA busy_timeout = 5000"
+        )
+        self._db.execute(
             "PRAGMA journal_mode = WAL"
+        )
+        self._db.execute(
+            "PRAGMA synchronous = FULL"
         )
 
         self._initialize()
 
     def close(self) -> None:
         self._db.close()
+
+    def quick_check(
+        self,
+    ) -> dict[str, Any]:
+        checks = [
+            str(row[0])
+            for row in self._db.execute(
+                "PRAGMA quick_check"
+            ).fetchall()
+        ]
+
+        def pragma(name: str):
+            row = self._db.execute(
+                f"PRAGMA {name}"
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return row[0]
+
+        return {
+            "ok": checks == ["ok"],
+            "quick_check": checks,
+            "path": str(self.path),
+            "journal_mode": pragma(
+                "journal_mode"
+            ),
+            "synchronous": pragma(
+                "synchronous"
+            ),
+            "foreign_keys": bool(
+                pragma("foreign_keys")
+            ),
+            "busy_timeout": pragma(
+                "busy_timeout"
+            ),
+            "wal_autocheckpoint": pragma(
+                "wal_autocheckpoint"
+            ),
+        }
 
     def _initialize(self) -> None:
         self._db.executescript(

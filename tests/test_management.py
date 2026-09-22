@@ -361,3 +361,70 @@ def test_follow_reports_unretained_log():
         )
 
     asyncio.run(run())
+
+
+
+def test_db_check():
+    async def run():
+        client = FakeClient(
+            result={
+                "ok": True,
+                "quick_check": ["ok"],
+                "journal_mode": "wal",
+                "synchronous": 2,
+                "foreign_keys": True,
+                "busy_timeout": 5000,
+                "wal_autocheckpoint": 1000,
+            }
+        )
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse("db-check"),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert client.calls == [
+            (
+                "db_check",
+                None,
+            )
+        ]
+
+        rendered = stdout.getvalue()
+
+        assert '"ok": true' in rendered
+        assert (
+            '"journal_mode": "wal"'
+            in rendered
+        )
+
+    asyncio.run(run())
+
+
+def test_db_check_failure_returns_nonzero():
+    async def run():
+        client = FakeClient(
+            result={
+                "ok": False,
+                "quick_check": [
+                    "corrupt"
+                ],
+            }
+        )
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse("db-check"),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 1
+        assert '"ok": false' in (
+            stdout.getvalue()
+        )
+
+    asyncio.run(run())

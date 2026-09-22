@@ -61,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="list named sessions",
     )
 
+    subparsers.add_parser(
+        "db-check",
+        help="check q state database health",
+    )
+
     logs = subparsers.add_parser(
         "logs",
         help="show durable q event logs",
@@ -162,6 +167,17 @@ async def run_management(
         )
         _json(stdout, result)
         return 0
+
+    if command == "db-check":
+        result = await client.request(
+            "db_check"
+        )
+        _json(stdout, result)
+        return (
+            0
+            if result.get("ok") is True
+            else 1
+        )
 
     if command == "logs":
         params = {

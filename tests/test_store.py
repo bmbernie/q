@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from q.models import (
@@ -392,3 +397,142 @@ def test_active_session_cannot_be_rebound(
     )
 
     store.close()
+
+
+
+def test_store_uses_explicit_durability_pragmas(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    expected = {
+        "journal_mode": "wal",
+        "synchronous": 2,
+        "foreign_keys": 1,
+        "busy_timeout": 5000,
+    }
+
+    for name, value in expected.items():
+        actual = store._db.execute(
+            f"PRAGMA {name}"
+        ).fetchone()[0]
+
+        assert actual == value
+
+    store.close()
+
+
+def test_quick_check_reports_database_health(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    result = store.quick_check()
+
+    assert result["ok"] is True
+    assert result["quick_check"] == [
+        "ok"
+    ]
+    assert result["journal_mode"] == "wal"
+    assert result["synchronous"] == 2
+    assert result["foreign_keys"] is True
+    assert result["busy_timeout"] == 5000
+    assert (
+        result["wal_autocheckpoint"]
+        == 1000
+    )
+
+    store.close()
+
+
+def test_wal_recovers_committed_state_after_abrupt_exit(
+    tmp_path,
+):
+    database = (
+        tmp_path / "crash.sqlite3"
+    )
+
+    source_root = (
+        Path(__file__)
+        .resolve()
+        .parents[1]
+        / "src"
+    )
+
+    code = r"""
+import os
+from pathlib import Path
+
+from q.models import ToolsPolicy
+from q.store import QStore
+
+store = QStore(
+    Path(os.environ["Q_CRASH_DB"])
+)
+
+store.create_session(
+    session_name="crash-proof",
+    backend_thread_id=(
+        "thread-crash-proof"
+    ),
+    model="gpt-5.6-luna",
+    reasoning_effort="xhigh",
+    tools_policy=ToolsPolicy.ENABLED,
+)
+
+# Deliberately bypass normal Python cleanup
+# and QStore.close().
+os._exit(73)
+"""
+
+    environment = dict(os.environ)
+    environment["Q_CRASH_DB"] = str(
+        database
+    )
+
+    existing_pythonpath = (
+        environment.get(
+            "PYTHONPATH",
+            "",
+        )
+    )
+
+    environment["PYTHONPATH"] = (
+        str(source_root)
+        + (
+            os.pathsep
+            + existing_pythonpath
+            if existing_pythonpath
+            else ""
+        )
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+        ],
+        env=environment,
+        check=False,
+    )
+
+    assert completed.returncode == 73
+
+    reopened = QStore(database)
+
+    session = reopened.get_session(
+        "crash-proof"
+    )
+
+    assert session is not None
+    assert (
+        session.backend_thread_id
+        == "thread-crash-proof"
+    )
+    assert (
+        reopened.quick_check()["ok"]
+        is True
+    )
+
+    reopened.close()
