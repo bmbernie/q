@@ -56,6 +56,9 @@ def query_dict(
         "session_name": (
             query.session_name
         ),
+        "backend_name": (
+            query.backend_name
+        ),
         "backend_thread_id": (
             query.backend_thread_id
         ),

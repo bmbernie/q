@@ -1187,6 +1187,18 @@ def test_session_can_hold_distinct_backend_bindings(
         assert web_binding is not None
         assert codex_binding is not None
 
+        web_done = store.get_query(
+            web_query.query_id
+        )
+        codex_done = store.get_query(
+            codex_query.query_id
+        )
+
+        assert web_done is not None
+        assert codex_done is not None
+        assert web_done.backend_name == "web"
+        assert codex_done.backend_name == "codex"
+
         assert (
             web_binding.conversation_id
             == "thread-web-one"

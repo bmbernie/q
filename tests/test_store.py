@@ -727,9 +727,9 @@ def test_restore_backup_replaces_live_database_and_preserves_rollback(
     assert result["quick_check"] == ["ok"]
     assert (
         result["source_schema_version"]
-        == 3
+        == 4
     )
-    assert result["schema_version"] == 3
+    assert result["schema_version"] == 4
 
     rollback = Path(
         result["rollback_backup"]
@@ -1001,7 +1001,7 @@ def test_v1_database_migrates_to_current_schema_without_data_loss(
         """
     ).fetchone()[0]
 
-    assert version == "3"
+    assert version == "4"
 
     legacy = store.get_session(
         "legacy"
@@ -1096,7 +1096,7 @@ def test_v1_database_migrates_to_current_schema_without_data_loss(
             tmp_path
             / "backups"
         ).glob(
-            "pre-migrate-v1-to-v3-"
+            "pre-migrate-v1-to-v4-"
             "*.sqlite3"
         )
     )
@@ -1292,14 +1292,14 @@ def test_restore_v1_backup_migrates_to_current_schema(
         result["source_schema_version"]
         == 1
     )
-    assert result["schema_version"] == 3
+    assert result["schema_version"] == 4
     assert result["quick_check"] == ["ok"]
 
     restored = QStore(live_path)
 
     assert (
         restored._schema_version()
-        == 3
+        == 4
     )
 
     assert (
@@ -1363,7 +1363,7 @@ def test_restore_v1_backup_migrates_to_current_schema(
         (
             tmp_path / "backups"
         ).glob(
-            "pre-migrate-v1-to-v3-"
+            "pre-migrate-v1-to-v4-"
             "*.sqlite3"
         )
     )
@@ -1907,6 +1907,33 @@ def test_v2_database_migrates_legacy_thread_to_codex_binding(
             last_used_at TEXT NOT NULL,
             archived_at TEXT
         );
+
+        CREATE TABLE queries (
+            query_id TEXT PRIMARY KEY,
+            session_name TEXT
+                REFERENCES sessions(session_name)
+                ON UPDATE CASCADE
+                ON DELETE SET NULL,
+            backend_thread_id TEXT,
+            upstream_turn_id TEXT,
+            model TEXT NOT NULL,
+            reasoning_effort TEXT NOT NULL,
+            tools_policy TEXT NOT NULL,
+            state TEXT NOT NULL,
+            prompt_metadata TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            error_type TEXT,
+            error_message TEXT,
+            retry_after TEXT,
+            log_path TEXT NOT NULL,
+            session_log_path TEXT,
+            detached INTEGER NOT NULL,
+            stdout_attached INTEGER NOT NULL,
+            cancel_requested_at TEXT,
+            last_stream_at TEXT
+        );
         """
     )
 
@@ -1949,7 +1976,7 @@ def test_v2_database_migrates_legacy_thread_to_codex_binding(
 
     store = QStore(path)
 
-    assert store._schema_version() == 3
+    assert store._schema_version() == 4
 
     binding = store.get_session_backend(
         "legacy-v2",
@@ -1963,3 +1990,109 @@ def test_v2_database_migrates_legacy_thread_to_codex_binding(
     )
 
     store.close()
+
+
+def test_query_records_actual_backend_name(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    query = store.create_query(
+        query_id="q-backend-name",
+        session_name=None,
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+        prompt_metadata={
+            "backend": None,
+        },
+        log_path="/tmp/q-backend-name.log",
+        session_log_path=None,
+        detached=False,
+        stdout_attached=True,
+    )
+
+    assert query.backend_name is None
+
+    updated = store.set_query_backend(
+        query.query_id,
+        backend_name="web",
+        backend_thread_id="qb1:web:test",
+    )
+
+    assert updated.backend_name == "web"
+    assert (
+        updated.backend_thread_id
+        == "qb1:web:test"
+    )
+
+    store.close()
+
+
+def test_v3_database_migrates_query_backend_name_as_unknown(
+    tmp_path,
+):
+    path = tmp_path / "q.sqlite3"
+
+    # Create a current database, then remove the
+    # v4-only column to construct a faithful v3
+    # database without duplicating the whole schema.
+    store = QStore(path)
+
+    store.create_query(
+        query_id="q-v3",
+        session_name=None,
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+        prompt_metadata={},
+        log_path="/tmp/q-v3.log",
+        session_log_path=None,
+        detached=False,
+        stdout_attached=True,
+    )
+
+    store.close()
+
+    db = sqlite3.connect(path)
+
+    db.execute(
+        """
+        ALTER TABLE queries
+        DROP COLUMN backend_name
+        """
+    )
+    db.execute(
+        """
+        UPDATE metadata
+        SET value = '3'
+        WHERE key = 'schema_version'
+        """
+    )
+
+    db.commit()
+    db.close()
+
+    migrated = QStore(path)
+
+    assert migrated._schema_version() == 4
+
+    query = migrated.get_query(
+        "q-v3"
+    )
+
+    assert query is not None
+    assert query.backend_name is None
+
+    migrated.close()
+
+    backups = list(
+        (
+            tmp_path / "backups"
+        ).glob(
+            "pre-migrate-v3-to-v4-"
+            "*.sqlite3"
+        )
+    )
+
+    assert len(backups) == 1

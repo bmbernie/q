@@ -23,7 +23,7 @@ from .models import (
 
 
 MIN_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SESSION_NAME = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
@@ -997,6 +997,7 @@ class QStore:
                     REFERENCES sessions(session_name)
                     ON UPDATE CASCADE
                     ON DELETE SET NULL,
+                backend_name TEXT,
                 backend_thread_id TEXT,
                 upstream_turn_id TEXT,
                 model TEXT NOT NULL,
@@ -1319,6 +1320,63 @@ class QStore:
 
         return 3
 
+    def _migrate_3_to_4(
+        self,
+    ) -> int:
+        try:
+            self._db.execute(
+                "BEGIN IMMEDIATE"
+            )
+
+            self._db.execute(
+                """
+                ALTER TABLE queries
+                ADD COLUMN backend_name TEXT
+                """
+            )
+
+            cursor = self._db.execute(
+                """
+                UPDATE metadata
+                SET value = ?
+                WHERE key = 'schema_version'
+                """,
+                ("4",),
+            )
+
+            if cursor.rowcount != 1:
+                raise StateStoreError(
+                    "failed to update "
+                    "schema_version during "
+                    "migration 3 -> 4"
+                )
+
+            violations = self._db.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+
+            if violations:
+                raise StateStoreError(
+                    "foreign-key validation "
+                    "failed during migration "
+                    "3 -> 4"
+                )
+
+            self._db.commit()
+
+        except StateStoreError:
+            self._db.rollback()
+            raise
+
+        except sqlite3.Error as exc:
+            self._db.rollback()
+            raise StateStoreError(
+                "database migration "
+                f"3 -> 4 failed: {exc}"
+            ) from exc
+
+        return 4
+
     def _migrate(
         self,
         version: int,
@@ -1335,6 +1393,12 @@ class QStore:
             if current == 2:
                 current = (
                     self._migrate_2_to_3()
+                )
+                continue
+
+            if current == 3:
+                current = (
+                    self._migrate_3_to_4()
                 )
                 continue
 
@@ -2093,6 +2157,7 @@ class QStore:
         self,
         query_id: str,
         *,
+        backend_name: str | None = None,
         backend_thread_id: str | None = None,
         upstream_turn_id: str | None = None,
     ) -> QueryRecord:
@@ -2104,6 +2169,12 @@ class QStore:
             raise KeyError(
                 query_id
             )
+
+        actual_backend = (
+            backend_name
+            if backend_name is not None
+            else current.backend_name
+        )
 
         thread_id = (
             backend_thread_id
@@ -2122,11 +2193,13 @@ class QStore:
                 """
                 UPDATE queries
                 SET
+                    backend_name = ?,
                     backend_thread_id = ?,
                     upstream_turn_id = ?
                 WHERE query_id = ?
                 """,
                 (
+                    actual_backend,
                     thread_id,
                     turn_id,
                     query_id,
@@ -2330,6 +2403,7 @@ class QStore:
         return QueryRecord(
             query_id=row["query_id"],
             session_name=row["session_name"],
+            backend_name=row["backend_name"],
             backend_thread_id=(
                 row["backend_thread_id"]
             ),

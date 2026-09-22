@@ -1467,14 +1467,14 @@ def test_doctor_reports_database_and_broker_health(
                 result["database"][
                     "schema_version"
                 ]
-                == 3
+                == 4
             )
 
             assert (
                 result["database"][
                     "expected_schema_version"
                 ]
-                == 3
+                == 4
             )
 
             assert (

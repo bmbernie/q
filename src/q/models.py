@@ -53,6 +53,7 @@ class SessionBackendBinding:
 class QueryRecord:
     query_id: str
     session_name: str | None
+    backend_name: str | None
     backend_thread_id: str | None
     upstream_turn_id: str | None
     model: str

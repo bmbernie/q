@@ -1248,6 +1248,7 @@ class QueryEngine:
 
         query = self.store.set_query_backend(
             query_id,
+            backend_name=backend,
             backend_thread_id=thread_id,
         )
 
