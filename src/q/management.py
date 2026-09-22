@@ -19,6 +19,9 @@ from .paths import (
 )
 
 
+DOCTOR_IPC_TIMEOUT_SECONDS = 5.0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qd",
@@ -221,8 +224,29 @@ async def run_management(
         remote = None
 
         try:
-            remote = await client.request(
-                "doctor"
+            remote = await asyncio.wait_for(
+                client.request(
+                    "doctor"
+                ),
+                timeout=(
+                    DOCTOR_IPC_TIMEOUT_SECONDS
+                ),
+            )
+
+        except TimeoutError:
+            ipc.update(
+                {
+                    "timed_out": True,
+                    "timeout_seconds": (
+                        DOCTOR_IPC_TIMEOUT_SECONDS
+                    ),
+                    "error": (
+                        "daemon doctor IPC timed "
+                        "out after "
+                        f"{DOCTOR_IPC_TIMEOUT_SECONDS:g} "
+                        "seconds"
+                    ),
+                }
             )
 
         except Exception as exc:
@@ -233,6 +257,10 @@ async def run_management(
 
         else:
             ipc["ok"] = True
+            ipc["timed_out"] = False
+            ipc["timeout_seconds"] = (
+                DOCTOR_IPC_TIMEOUT_SECONDS
+            )
 
         if isinstance(
             remote,

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 import httpx
+
+
+BROKER_HEALTH_TIMEOUT_SECONDS = 5.0
 
 from .models import ToolsPolicy
 
@@ -109,9 +113,22 @@ class HTTPBroker:
         self,
     ) -> dict[str, Any]:
         try:
-            response = await self._client.get(
-                f"{self.base_url}/health"
+            response = await asyncio.wait_for(
+                self._client.get(
+                    f"{self.base_url}/health"
+                ),
+                timeout=(
+                    BROKER_HEALTH_TIMEOUT_SECONDS
+                ),
             )
+
+        except TimeoutError as exc:
+            raise BrokerTransportError(
+                "broker health check timed out "
+                "after "
+                f"{BROKER_HEALTH_TIMEOUT_SECONDS:g} "
+                "seconds"
+            ) from exc
 
         except httpx.HTTPError as exc:
             raise BrokerTransportError(

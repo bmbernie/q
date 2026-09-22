@@ -122,3 +122,57 @@ def test_broker_health_reports_http_failure():
             await client.aclose()
 
     asyncio.run(run())
+
+
+def test_broker_health_times_out(
+    monkeypatch,
+):
+    import q.broker as broker_module
+
+    async def run():
+        monkeypatch.setattr(
+            broker_module,
+            "BROKER_HEALTH_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        async def handler(request):
+            await asyncio.sleep(1)
+
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "workers": 5,
+                },
+            )
+
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                handler
+            )
+        )
+
+        try:
+            broker = HTTPBroker(
+                "http://broker.test",
+                client=client,
+            )
+
+            from q.broker import (
+                BrokerTransportError,
+            )
+
+            with pytest.raises(
+                BrokerTransportError,
+                match=(
+                    "health check timed out "
+                    "after 0.01 seconds"
+                ),
+            ):
+                await broker.health()
+
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())

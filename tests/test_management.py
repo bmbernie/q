@@ -863,3 +863,85 @@ def test_doctor_reports_invalid_local_config():
             )
 
     asyncio.run(run())
+
+
+def test_doctor_reports_daemon_ipc_timeout(
+    monkeypatch,
+):
+    async def run():
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import q.management as management
+
+        monkeypatch.setattr(
+            management,
+            "DOCTOR_IPC_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        class HangingClient:
+            async def request(
+                self,
+                method,
+                params=None,
+            ):
+                assert method == "doctor"
+
+                await asyncio.Event().wait()
+
+        with tempfile.TemporaryDirectory() as raw:
+            paths = _doctor_paths(
+                Path(raw)
+            )
+
+            stdout = io.StringIO()
+
+            status = await run_management(
+                args=parse("doctor"),
+                client=HangingClient(),
+                stdout=stdout,
+                paths=paths,
+            )
+
+            result = json.loads(
+                stdout.getvalue()
+            )
+
+            assert status == 1
+            assert result["ok"] is False
+
+            ipc = result[
+                "daemon"
+            ]["ipc"]
+
+            assert ipc["ok"] is False
+            assert (
+                ipc["timed_out"]
+                is True
+            )
+            assert (
+                ipc["timeout_seconds"]
+                == 0.01
+            )
+            assert (
+                "timed out after 0.01 seconds"
+                in ipc["error"]
+            )
+
+            assert (
+                result["database"][
+                    "available"
+                ]
+                is False
+            )
+
+            assert (
+                result["broker"][
+                    "available"
+                ]
+                is False
+            )
+
+    asyncio.run(run())
