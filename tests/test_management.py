@@ -251,3 +251,62 @@ def test_follow_prints_only_answer_deltas():
         )
 
     asyncio.run(run())
+
+
+
+def test_logs_prints_raw_ndjson_lines():
+    async def run():
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "log",
+                    {
+                        "path": "/tmp/q.ndjson",
+                        "line": (
+                            '{"type":"delta",'
+                            '"delta":"hello"}'
+                        ),
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "path": "/tmp/q.ndjson",
+                        "follow": False,
+                    },
+                ),
+            ]
+        )
+
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse(
+                "logs",
+                "-s",
+                "alpha",
+            ),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert stdout.getvalue() == (
+            '{"type":"delta",'
+            '"delta":"hello"}\n'
+        )
+
+        assert client.calls == [
+            (
+                "logs",
+                {
+                    "follow": False,
+                    "session_name": (
+                        "alpha"
+                    ),
+                },
+            )
+        ]
+
+    asyncio.run(run())

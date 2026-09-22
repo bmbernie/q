@@ -61,6 +61,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="list named sessions",
     )
 
+    logs = subparsers.add_parser(
+        "logs",
+        help="show durable q event logs",
+    )
+    logs.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        help="follow appended log events",
+    )
+    logs.add_argument(
+        "-s",
+        "--session",
+        dest="session_name",
+        help="show one named session log",
+    )
+
     follow = subparsers.add_parser(
         "follow",
         help="follow query output",
@@ -144,6 +161,37 @@ async def run_management(
             "sessions"
         )
         _json(stdout, result)
+        return 0
+
+    if command == "logs":
+        params = {
+            "follow": args.follow,
+        }
+
+        if args.session_name is not None:
+            params["session_name"] = (
+                args.session_name
+            )
+
+        async for frame in client.frames(
+            "logs",
+            params,
+        ):
+            if (
+                frame.type == "event"
+                and frame.event == "log"
+            ):
+                line = frame.data.get(
+                    "line",
+                    "",
+                )
+
+                if isinstance(line, str):
+                    stdout.write(
+                        line + "\n"
+                    )
+                    stdout.flush()
+
         return 0
 
     if command == "cancel":

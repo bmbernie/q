@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -233,6 +234,13 @@ class QDService:
             if request.method == "follow":
                 async for frame in (
                     self._follow(request)
+                ):
+                    yield frame
+                return
+
+            if request.method == "logs":
+                async for frame in (
+                    self._logs(request)
                 ):
                     yield frame
                 return
@@ -572,6 +580,96 @@ class QDService:
         yield IPCFrame.result_frame(
             request.request_id,
             query_dict(final),
+        )
+
+    async def _logs(
+        self,
+        request: IPCRequest,
+    ) -> AsyncIterator[IPCFrame]:
+        session_name = _optional_string(
+            request.params,
+            "session_name",
+        )
+
+        follow = _boolean(
+            request.params,
+            "follow",
+            default=False,
+        )
+
+        if session_name is None:
+            log_path = (
+                self.engine.state_dir
+                / "q.ndjson"
+            )
+
+        else:
+            session = self.store.get_session(
+                session_name
+            )
+
+            if session is None:
+                raise KeyError(
+                    session_name
+                )
+
+            log_path = (
+                self.engine.state_dir
+                / "sessions"
+                / f"{session_name}.ndjson"
+            )
+
+        offset = 0
+
+        while True:
+            try:
+                with log_path.open(
+                    "r",
+                    encoding="utf-8",
+                ) as stream:
+                    stream.seek(offset)
+
+                    while True:
+                        line = stream.readline()
+
+                        if not line:
+                            break
+
+                        offset = stream.tell()
+
+                        yield (
+                            IPCFrame.event_frame(
+                                request.request_id,
+                                "log",
+                                {
+                                    "path": str(
+                                        log_path
+                                    ),
+                                    "line": (
+                                        line.rstrip(
+                                            "\n"
+                                        )
+                                    ),
+                                },
+                            )
+                        )
+
+            except FileNotFoundError:
+                pass
+
+            if not follow:
+                break
+
+            await asyncio.sleep(
+                0.2
+            )
+
+        yield IPCFrame.result_frame(
+            request.request_id,
+            {
+                "path": str(log_path),
+                "follow": follow,
+            },
         )
 
     def _status(

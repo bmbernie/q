@@ -818,3 +818,111 @@ def test_follow_completed_query_uses_persisted_log(
             store.close()
 
     asyncio.run(run())
+
+
+
+def test_logs_expose_global_and_session_ndjson(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "log-me",
+                    "cwd": "/tmp",
+                    "session_name": (
+                        "log-session"
+                    ),
+                },
+            )
+
+            query_id = result[
+                "query_id"
+            ]
+
+            global_lines = []
+
+            async for frame in (
+                client.frames(
+                    "logs",
+                    {
+                        "follow": False,
+                    },
+                )
+            ):
+                if (
+                    frame.type == "event"
+                    and frame.event == "log"
+                ):
+                    global_lines.append(
+                        frame.data["line"]
+                    )
+
+            session_lines = []
+
+            async for frame in (
+                client.frames(
+                    "logs",
+                    {
+                        "follow": False,
+                        "session_name": (
+                            "log-session"
+                        ),
+                    },
+                )
+            ):
+                if (
+                    frame.type == "event"
+                    and frame.event == "log"
+                ):
+                    session_lines.append(
+                        frame.data["line"]
+                    )
+
+            assert any(
+                query_id in line
+                for line in global_lines
+            )
+
+            assert any(
+                '"delta":"answer:log-me"'
+                in line
+                for line in global_lines
+            )
+
+            assert any(
+                query_id in line
+                for line in session_lines
+            )
+
+            assert any(
+                '"delta":"answer:log-me"'
+                in line
+                for line in session_lines
+            )
+
+            assert (
+                tmp_path
+                / "state"
+                / "q.ndjson"
+            ).exists()
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())

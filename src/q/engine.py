@@ -1061,6 +1061,10 @@ class QueryEngine:
         )
 
         for raw_path in (
+            str(
+                self.state_dir
+                / "q.ndjson"
+            ),
             query.log_path,
             query.session_log_path,
         ):
