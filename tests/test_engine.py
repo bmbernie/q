@@ -724,3 +724,216 @@ def test_recover_does_not_replay_running_query(
         store.close()
 
     asyncio.run(run())
+
+
+class InteractiveBroker:
+    def __init__(self):
+        self.responses = []
+        self.response_event = (
+            asyncio.Event()
+        )
+        self.response_result = None
+
+    def stream_query(
+        self,
+        *,
+        input_text,
+        cwd,
+        model,
+        reasoning_effort,
+        thread_id,
+        tools_policy,
+        ephemeral,
+        sandbox,
+    ):
+        return self._stream()
+
+    async def _stream(self):
+        yield {
+            "type": "thread",
+            "thread_id": "thread-i",
+        }
+
+        yield {
+            "type": "turn",
+            "thread_id": "thread-i",
+            "turn_id": "turn-i",
+        }
+
+        yield {
+            "type": "server_request",
+            "interaction_id": "interaction-i",
+            "thread_id": "thread-i",
+            "turn_id": "turn-i",
+            "method": (
+                "item/fileChange/"
+                "requestApproval"
+            ),
+            "params": {
+                "threadId": "thread-i",
+                "turnId": "turn-i",
+                "itemId": "item-i",
+                "startedAtMs": 1,
+            },
+        }
+
+        await self.response_event.wait()
+
+        yield {
+            "type": "completed",
+            "thread_id": "thread-i",
+            "turn_id": "turn-i",
+            "status": "completed",
+            "error": None,
+        }
+
+    async def respond_interaction(
+        self,
+        *,
+        interaction_id,
+        result,
+    ):
+        self.responses.append(
+            (
+                interaction_id,
+                result,
+            )
+        )
+        self.response_result = result
+        self.response_event.set()
+
+    async def interrupt(
+        self,
+        *,
+        thread_id,
+        turn_id,
+    ):
+        pass
+
+
+def test_attached_interaction_can_be_answered(
+    tmp_path,
+):
+    async def run():
+        store = QStore(
+            tmp_path / "q.sqlite3"
+        )
+        broker = InteractiveBroker()
+
+        engine = QueryEngine(
+            store=store,
+            broker=broker,
+            state_dir=(
+                tmp_path / "state"
+            ),
+            query_id_factory=(
+                lambda: "q-interactive"
+            ),
+        )
+
+        query = await engine.submit(
+            input_text="interactive",
+            cwd="/tmp",
+        )
+
+        interaction = None
+
+        async for event in engine.watch(
+            query.query_id
+        ):
+            if (
+                event.get("type")
+                == "interaction"
+            ):
+                interaction = event
+                break
+
+        assert interaction is not None
+        assert (
+            interaction[
+                "interaction_id"
+            ]
+            == "interaction-i"
+        )
+
+        await engine.respond_interaction(
+            query.query_id,
+            "interaction-i",
+            {
+                "decision": "accept",
+            },
+        )
+
+        done = await engine.wait(
+            query.query_id
+        )
+
+        assert (
+            done.state
+            == QueryState.COMPLETED
+        )
+
+        assert broker.responses == [
+            (
+                "interaction-i",
+                {
+                    "decision": "accept",
+                },
+            )
+        ]
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_detached_interaction_declines_automatically(
+    tmp_path,
+):
+    async def run():
+        store = QStore(
+            tmp_path / "q.sqlite3"
+        )
+        broker = InteractiveBroker()
+
+        engine = QueryEngine(
+            store=store,
+            broker=broker,
+            state_dir=(
+                tmp_path / "state"
+            ),
+            query_id_factory=(
+                lambda: "q-detached-i"
+            ),
+        )
+
+        query = await engine.submit(
+            input_text="interactive",
+            cwd="/tmp",
+            detached=True,
+            stdout_attached=False,
+        )
+
+        done = await engine.wait(
+            query.query_id
+        )
+
+        assert (
+            done.state
+            == QueryState.COMPLETED
+        )
+
+        assert broker.responses == [
+            (
+                "interaction-i",
+                {
+                    "decision": "decline",
+                },
+            )
+        ]
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())

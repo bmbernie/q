@@ -266,6 +266,12 @@ class QDService:
                 )
                 return
 
+            if request.method == "respond_interaction":
+                yield await self._respond_interaction(
+                    request
+                )
+                return
+
             if request.method == "cancel":
                 yield await self._cancel(
                     request
@@ -777,6 +783,49 @@ class QDService:
                         .list_sessions()
                     )
                 ],
+            },
+        )
+
+    async def _respond_interaction(
+        self,
+        request: IPCRequest,
+    ) -> IPCFrame:
+        query_id = _required_string(
+            request.params,
+            "query_id",
+        )
+
+        interaction_id = _required_string(
+            request.params,
+            "interaction_id",
+        )
+
+        result = request.params.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            raise ValueError(
+                "result must be an object"
+            )
+
+        await self.engine.respond_interaction(
+            query_id,
+            interaction_id,
+            result,
+        )
+
+        return IPCFrame.result_frame(
+            request.request_id,
+            {
+                "responded": True,
+                "query_id": query_id,
+                "interaction_id": (
+                    interaction_id
+                ),
             },
         )
 

@@ -40,6 +40,75 @@ def _timestamp() -> str:
     ).isoformat()
 
 
+def _detached_interaction_result(
+    method: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    if method in {
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+    }:
+        return {
+            "decision": "decline",
+        }
+
+    if method == "mcpServer/elicitation/request":
+        return {
+            "action": "decline",
+        }
+
+    if method == "item/permissions/requestApproval":
+        return {
+            "permissions": {},
+            "scope": "turn",
+        }
+
+    if method == "item/tool/requestUserInput":
+        answers: dict[
+            str,
+            dict[str, list[str]],
+        ] = {}
+
+        questions = params.get(
+            "questions",
+            [],
+        )
+
+        if isinstance(
+            questions,
+            list,
+        ):
+            for question in questions:
+                if not isinstance(
+                    question,
+                    dict,
+                ):
+                    continue
+
+                question_id = question.get(
+                    "id"
+                )
+
+                if isinstance(
+                    question_id,
+                    str,
+                ) and question_id:
+                    answers[
+                        question_id
+                    ] = {
+                        "answers": [],
+                    }
+
+        return {
+            "answers": answers,
+        }
+
+    raise BrokerProtocolError(
+        "unsupported interactive "
+        f"request method {method!r}"
+    )
+
+
 @dataclass(slots=True)
 class _Runtime:
     condition: asyncio.Condition = field(
@@ -50,6 +119,12 @@ class _Runtime:
     )
     done: bool = False
     interrupt_sent: bool = False
+    pending_interactions: dict[
+        str,
+        str,
+    ] = field(
+        default_factory=dict
+    )
 
 
 class QueryEngine:
@@ -409,6 +484,73 @@ class QueryEngine:
             ):
                 return
 
+    async def respond_interaction(
+        self,
+        query_id: str,
+        interaction_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        query = self.store.get_query(
+            query_id
+        )
+
+        if query is None:
+            raise KeyError(
+                query_id
+            )
+
+        if query.state != QueryState.RUNNING:
+            raise RuntimeError(
+                "query is not running"
+            )
+
+        runtime = self._runtimes.get(
+            query_id
+        )
+
+        if runtime is None:
+            raise RuntimeError(
+                "query has no active runtime"
+            )
+
+        method = (
+            runtime.pending_interactions.pop(
+                interaction_id,
+                None,
+            )
+        )
+
+        if method is None:
+            raise KeyError(
+                interaction_id
+            )
+
+        try:
+            await self.broker.respond_interaction(
+                interaction_id=interaction_id,
+                result=result,
+            )
+
+        except Exception:
+            runtime.pending_interactions[
+                interaction_id
+            ] = method
+            raise
+
+        await self._emit(
+            query_id,
+            {
+                "type": (
+                    "interaction_response"
+                ),
+                "interaction_id": (
+                    interaction_id
+                ),
+                "method": method,
+                "result": result,
+            },
+        )
+
     async def cancel(
         self,
         query_id: str,
@@ -713,6 +855,12 @@ class QueryEngine:
                         event,
                     )
 
+                elif event_type == "server_request":
+                    await self._handle_interaction(
+                        query_id,
+                        event,
+                    )
+
                 await self._emit(
                     query_id,
                     {
@@ -852,6 +1000,116 @@ class QueryEngine:
             raise BrokerProtocolError(
                 "session thread changed"
             )
+
+    async def _handle_interaction(
+        self,
+        query_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        interaction_id = event.get(
+            "interaction_id"
+        )
+        method = event.get(
+            "method"
+        )
+        params = event.get(
+            "params",
+            {},
+        )
+
+        if (
+            not isinstance(
+                interaction_id,
+                str,
+            )
+            or not interaction_id
+        ):
+            raise BrokerProtocolError(
+                "server_request missing "
+                "interaction_id"
+            )
+
+        if (
+            not isinstance(method, str)
+            or not method
+        ):
+            raise BrokerProtocolError(
+                "server_request missing method"
+            )
+
+        if not isinstance(params, dict):
+            raise BrokerProtocolError(
+                "server_request params must "
+                "be an object"
+            )
+
+        query = self.store.get_query(
+            query_id
+        )
+
+        if query is None:
+            raise KeyError(
+                query_id
+            )
+
+        if query.detached:
+            result = (
+                _detached_interaction_result(
+                    method,
+                    params,
+                )
+            )
+
+            await self.broker.respond_interaction(
+                interaction_id=(
+                    interaction_id
+                ),
+                result=result,
+            )
+
+            await self._emit(
+                query_id,
+                {
+                    "type": (
+                        "interaction_auto_response"
+                    ),
+                    "interaction_id": (
+                        interaction_id
+                    ),
+                    "method": method,
+                    "result": result,
+                },
+            )
+
+            return
+
+        runtime = self._runtimes[
+            query_id
+        ]
+
+        if (
+            interaction_id
+            in runtime.pending_interactions
+        ):
+            raise BrokerProtocolError(
+                "duplicate interaction_id"
+            )
+
+        runtime.pending_interactions[
+            interaction_id
+        ] = method
+
+        await self._emit(
+            query_id,
+            {
+                "type": "interaction",
+                "interaction_id": (
+                    interaction_id
+                ),
+                "method": method,
+                "params": params,
+            },
+        )
 
     async def _handle_turn(
         self,

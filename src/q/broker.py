@@ -55,6 +55,92 @@ class Broker(Protocol):
     ) -> AsyncIterator[dict[str, Any]]:
         ...
 
+    async def respond_interaction(
+        self,
+        *,
+        interaction_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        ...
+
+
+    async def respond_interaction(
+        self,
+        *,
+        interaction_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        try:
+            response = await self._client.post(
+                (
+                    f"{self.base_url}/v1/"
+                    "interactions/"
+                    f"{interaction_id}/respond"
+                ),
+                json={
+                    "result": result,
+                },
+            )
+
+        except httpx.HTTPError as exc:
+            raise BrokerTransportError(
+                str(exc)
+            ) from exc
+
+        if response.status_code >= 400:
+            try:
+                parsed = response.json()
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+            ):
+                parsed = None
+
+            detail = (
+                parsed.get("detail")
+                if isinstance(
+                    parsed,
+                    dict,
+                )
+                else None
+            )
+
+            if isinstance(detail, dict):
+                code = str(
+                    detail.get(
+                        "error",
+                        "broker_error",
+                    )
+                )
+                message = str(
+                    detail.get(
+                        "message",
+                        code,
+                    )
+                )
+            else:
+                code = "broker_error"
+                message = (
+                    str(detail)
+                    if detail is not None
+                    else (
+                        response.reason_phrase
+                        or (
+                            "interaction response "
+                            "failed"
+                        )
+                    )
+                )
+
+            raise BrokerHTTPError(
+                status_code=(
+                    response.status_code
+                ),
+                code=code,
+                message=message,
+                details=parsed,
+            )
+
     async def interrupt(
         self,
         *,

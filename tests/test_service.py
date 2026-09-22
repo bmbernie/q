@@ -7,6 +7,7 @@ from q.engine import QueryEngine
 from q.ipc import (
     IPCClient,
     IPCRemoteError,
+    IPCRequest,
     IPCServer,
 )
 from q.models import (
@@ -1111,5 +1112,72 @@ def test_existing_session_inherits_saved_model_and_reasoning(
             await server.aclose()
             await engine.aclose()
             store.close()
+
+    asyncio.run(run())
+
+
+def test_respond_interaction_ipc_method():
+    class StubEngine:
+        def __init__(self):
+            self.calls = []
+
+        async def respond_interaction(
+            self,
+            query_id,
+            interaction_id,
+            result,
+        ):
+            self.calls.append(
+                (
+                    query_id,
+                    interaction_id,
+                    result,
+                )
+            )
+
+    async def run():
+        engine = StubEngine()
+
+        service = QDService(
+            store=object(),
+            engine=engine,
+        )
+
+        request = IPCRequest(
+            request_id="request-1",
+            method="respond_interaction",
+            params={
+                "query_id": "q-1",
+                "interaction_id": "i-1",
+                "result": {
+                    "decision": "accept",
+                },
+            },
+        )
+
+        frames = [
+            frame
+            async for frame
+            in service.handle(request)
+        ]
+
+        assert len(frames) == 1
+        assert frames[0].type == "result"
+
+        assert frames[0].result == {
+            "responded": True,
+            "query_id": "q-1",
+            "interaction_id": "i-1",
+        }
+
+        assert engine.calls == [
+            (
+                "q-1",
+                "i-1",
+                {
+                    "decision": "accept",
+                },
+            )
+        ]
 
     asyncio.run(run())

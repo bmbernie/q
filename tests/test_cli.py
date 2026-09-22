@@ -349,3 +349,243 @@ def test_empty_input_rejected():
 class TTYStringIO(io.StringIO):
     def isatty(self):
         return True
+
+
+def test_command_approval_interaction(
+    tmp_path,
+):
+    async def run():
+        args = parse("hello")
+
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "interaction",
+                    {
+                        "type": "interaction",
+                        "query_id": "q-1",
+                        "interaction_id": "i-1",
+                        "method": (
+                            "item/commandExecution/"
+                            "requestApproval"
+                        ),
+                        "params": {
+                            "command": "echo hello",
+                            "cwd": "/tmp",
+                            "reason": "test",
+                        },
+                    },
+                ),
+                IPCFrame.event_frame(
+                    "r",
+                    "delta",
+                    {
+                        "delta": "DONE",
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ],
+            result={
+                "responded": True,
+            },
+        )
+
+        stdin = TTYStringIO(
+            "y\n"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        assert status == 0
+        assert stdout.getvalue() == (
+            "DONE\n"
+        )
+
+        assert (
+            "command approval"
+            in stderr.getvalue()
+        )
+
+        assert client.sent[1] == (
+            "respond_interaction",
+            {
+                "query_id": "q-1",
+                "interaction_id": "i-1",
+                "result": {
+                    "decision": "accept",
+                },
+            },
+        )
+
+    asyncio.run(run())
+
+
+def test_tool_user_input_interaction():
+    async def run():
+        args = parse("hello")
+
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "interaction",
+                    {
+                        "type": "interaction",
+                        "query_id": "q-2",
+                        "interaction_id": "i-2",
+                        "method": (
+                            "item/tool/"
+                            "requestUserInput"
+                        ),
+                        "params": {
+                            "questions": [
+                                {
+                                    "header": (
+                                        "Environment"
+                                    ),
+                                    "id": "env",
+                                    "question": (
+                                        "Choose one"
+                                    ),
+                                    "options": [
+                                        {
+                                            "label": "prod",
+                                            "description": (
+                                                "Production"
+                                            ),
+                                        },
+                                        {
+                                            "label": "dev",
+                                            "description": (
+                                                "Development"
+                                            ),
+                                        },
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ],
+            result={
+                "responded": True,
+            },
+        )
+
+        stdin = TTYStringIO(
+            "2\n"
+        )
+
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=stdin,
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+
+        assert status == 0
+
+        assert client.sent[1] == (
+            "respond_interaction",
+            {
+                "query_id": "q-2",
+                "interaction_id": "i-2",
+                "result": {
+                    "answers": {
+                        "env": {
+                            "answers": [
+                                "dev"
+                            ],
+                        },
+                    },
+                },
+            },
+        )
+
+    asyncio.run(run())
+
+
+def test_permissions_interaction_can_deny():
+    async def run():
+        args = parse("hello")
+
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "interaction",
+                    {
+                        "type": "interaction",
+                        "query_id": "q-3",
+                        "interaction_id": "i-3",
+                        "method": (
+                            "item/permissions/"
+                            "requestApproval"
+                        ),
+                        "params": {
+                            "permissions": {
+                                "network": {
+                                    "enabled": True,
+                                },
+                            },
+                        },
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ],
+            result={
+                "responded": True,
+            },
+        )
+
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=TTYStringIO(
+                "n\n"
+            ),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+
+        assert status == 0
+
+        assert client.sent[1] == (
+            "respond_interaction",
+            {
+                "query_id": "q-3",
+                "interaction_id": "i-3",
+                "result": {
+                    "permissions": {},
+                    "scope": "turn",
+                },
+            },
+        )
+
+    asyncio.run(run())
