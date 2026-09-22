@@ -1,3 +1,4 @@
+import sqlite3
 import os
 import subprocess
 import sys
@@ -536,3 +537,151 @@ os._exit(73)
     )
 
     reopened.close()
+
+
+def test_database_backup_is_consistent_and_standalone(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    store.create_session(
+        session_name="backup-proof",
+        backend_thread_id=(
+            "thread-backup-proof"
+        ),
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    destination = (
+        tmp_path
+        / "backup.sqlite3"
+    )
+
+    result = store.backup(
+        destination
+    )
+
+    assert result["ok"] is True
+    assert result["path"] == str(
+        destination.resolve()
+    )
+    assert result["size_bytes"] > 0
+    assert result["quick_check"] == [
+        "ok"
+    ]
+
+    assert destination.exists()
+
+    mode = (
+        destination.stat().st_mode
+        & 0o777
+    )
+
+    assert mode == 0o600
+
+    assert not Path(
+        str(destination) + "-wal"
+    ).exists()
+    assert not Path(
+        str(destination) + "-shm"
+    ).exists()
+
+    snapshot = sqlite3.connect(
+        destination
+    )
+
+    row = snapshot.execute(
+        """
+        SELECT backend_thread_id
+        FROM sessions
+        WHERE session_name = ?
+        """,
+        ("backup-proof",),
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == (
+        "thread-backup-proof"
+    )
+
+    assert (
+        snapshot.execute(
+            "PRAGMA quick_check"
+        ).fetchone()[0]
+        == "ok"
+    )
+
+    snapshot.close()
+    store.close()
+
+
+def test_database_backup_refuses_overwrite(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    store = make_store(tmp_path)
+
+    destination = (
+        tmp_path
+        / "existing.sqlite3"
+    )
+
+    destination.write_text(
+        "do not overwrite",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        StateStoreError
+    ):
+        store.backup(destination)
+
+    assert destination.read_text(
+        encoding="utf-8"
+    ) == "do not overwrite"
+
+    store.close()
+
+
+def test_default_database_backup_directory(
+    tmp_path,
+):
+    from datetime import (
+        datetime,
+        timezone,
+    )
+
+    store = make_store(tmp_path)
+
+    result = store.backup(
+        now=datetime(
+            2026,
+            9,
+            22,
+            4,
+            30,
+            15,
+            tzinfo=timezone.utc,
+        )
+    )
+
+    expected = (
+        tmp_path
+        / "backups"
+        / "q-20260922-043015.sqlite3"
+    )
+
+    assert result["path"] == str(
+        expected.resolve()
+    )
+    assert expected.exists()
+
+    assert (
+        expected.parent.stat().st_mode
+        & 0o777
+    ) == 0o700
+
+    store.close()

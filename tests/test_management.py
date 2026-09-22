@@ -428,3 +428,84 @@ def test_db_check_failure_returns_nonzero():
         )
 
     asyncio.run(run())
+
+
+def test_db_backup_default():
+    async def run():
+        client = FakeClient(
+            result={
+                "ok": True,
+                "path": (
+                    "/tmp/backup.sqlite3"
+                ),
+                "size_bytes": 123,
+                "quick_check": ["ok"],
+            }
+        )
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse("db-backup"),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert client.calls == [
+            (
+                "db_backup",
+                {},
+            )
+        ]
+        assert '"size_bytes": 123' in (
+            stdout.getvalue()
+        )
+
+    asyncio.run(run())
+
+
+def test_db_backup_resolves_custom_path(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        monkeypatch.chdir(tmp_path)
+
+        client = FakeClient(
+            result={
+                "ok": True,
+                "path": str(
+                    tmp_path
+                    / "snapshot.sqlite3"
+                ),
+                "size_bytes": 123,
+                "quick_check": ["ok"],
+            }
+        )
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse(
+                "db-backup",
+                "snapshot.sqlite3",
+            ),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert client.calls == [
+            (
+                "db_backup",
+                {
+                    "path": str(
+                        (
+                            tmp_path
+                            / "snapshot.sqlite3"
+                        ).resolve()
+                    ),
+                },
+            )
+        ]
+
+    asyncio.run(run())

@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -1332,6 +1333,65 @@ def test_db_check_reports_store_health(
                 result["busy_timeout"]
                 == 5000
             )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_db_backup_creates_consistent_snapshot(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            destination = (
+                tmp_path
+                / "snapshot.sqlite3"
+            )
+
+            result = await client.request(
+                "db_backup",
+                {
+                    "path": str(
+                        destination
+                    ),
+                },
+            )
+
+            assert result["ok"] is True
+            assert (
+                result["quick_check"]
+                == ["ok"]
+            )
+            assert destination.exists()
+
+            snapshot = sqlite3.connect(
+                destination
+            )
+
+            assert (
+                snapshot.execute(
+                    "PRAGMA quick_check"
+                ).fetchone()[0]
+                == "ok"
+            )
+
+            snapshot.close()
 
         finally:
             await server.aclose()

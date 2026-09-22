@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -162,6 +164,164 @@ class QStore:
                 "wal_autocheckpoint"
             ),
         }
+
+    def backup(
+        self,
+        destination: Path | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if now is None:
+            now = datetime.now(
+                timezone.utc
+            )
+
+        if destination is None:
+            backup_dir = (
+                self.path.parent
+                / "backups"
+            )
+
+            backup_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+                mode=0o700,
+            )
+            backup_dir.chmod(0o700)
+
+            destination = (
+                backup_dir
+                / (
+                    "q-"
+                    + now.strftime(
+                        "%Y%m%d-%H%M%S"
+                    )
+                    + ".sqlite3"
+                )
+            )
+
+        destination = (
+            destination
+            .expanduser()
+            .resolve(strict=False)
+        )
+
+        if destination.exists():
+            raise StateStoreError(
+                "backup destination already "
+                f"exists: {destination}"
+            )
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        fd, raw_temp = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=(
+                f".{destination.name}."
+            ),
+            suffix=".tmp",
+        )
+        os.close(fd)
+
+        temp_path = Path(raw_temp)
+
+        try:
+            os.chmod(
+                temp_path,
+                0o600,
+            )
+
+            snapshot = sqlite3.connect(
+                temp_path,
+                timeout=5.0,
+            )
+
+            try:
+                self._db.backup(
+                    snapshot
+                )
+
+                # Make the snapshot a standalone
+                # SQLite file. QStore will switch
+                # it back to WAL if it is restored
+                # and opened as the live database.
+                snapshot.execute(
+                    "PRAGMA journal_mode = DELETE"
+                )
+
+                checks = [
+                    str(row[0])
+                    for row
+                    in snapshot.execute(
+                        "PRAGMA quick_check"
+                    ).fetchall()
+                ]
+
+            finally:
+                snapshot.close()
+
+            if checks != ["ok"]:
+                raise StateStoreError(
+                    "backup quick_check failed: "
+                    + "; ".join(checks)
+                )
+
+            os.chmod(
+                temp_path,
+                0o600,
+            )
+
+            # link() provides an atomic
+            # no-overwrite publication step.
+            try:
+                os.link(
+                    temp_path,
+                    destination,
+                )
+
+            except FileExistsError as exc:
+                raise StateStoreError(
+                    "backup destination already "
+                    f"exists: {destination}"
+                ) from exc
+
+            size = (
+                destination.stat().st_size
+            )
+
+            return {
+                "ok": True,
+                "path": str(destination),
+                "size_bytes": size,
+                "quick_check": checks,
+            }
+
+        except (
+            OSError,
+            sqlite3.Error,
+        ) as exc:
+            raise StateStoreError(
+                f"database backup failed: {exc}"
+            ) from exc
+
+        finally:
+            for candidate in (
+                temp_path,
+                Path(
+                    str(temp_path)
+                    + "-wal"
+                ),
+                Path(
+                    str(temp_path)
+                    + "-shm"
+                ),
+            ):
+                candidate.unlink(
+                    missing_ok=True
+                )
 
     def _initialize(self) -> None:
         self._db.executescript(

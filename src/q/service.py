@@ -274,6 +274,27 @@ class QDService:
                 )
                 return
 
+            if request.method == "db_backup":
+                raw_path = _optional_string(
+                    request.params,
+                    "path",
+                    default=None,
+                )
+
+                destination = (
+                    Path(raw_path)
+                    if raw_path is not None
+                    else None
+                )
+
+                yield IPCFrame.result_frame(
+                    request.request_id,
+                    self.store.backup(
+                        destination
+                    ),
+                )
+                return
+
             if request.method == "respond_interaction":
                 yield await self._respond_interaction(
                     request

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 import sys
 from typing import TextIO
 
@@ -64,6 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "db-check",
         help="check q state database health",
+    )
+
+    db_backup = subparsers.add_parser(
+        "db-backup",
+        help="create a consistent q database backup",
+    )
+    db_backup.add_argument(
+        "path",
+        nargs="?",
+        help=(
+            "destination path; defaults to "
+            "~/.local/share/q/backups/"
+        ),
     )
 
     logs = subparsers.add_parser(
@@ -171,6 +185,27 @@ async def run_management(
     if command == "db-check":
         result = await client.request(
             "db_check"
+        )
+        _json(stdout, result)
+        return (
+            0
+            if result.get("ok") is True
+            else 1
+        )
+
+    if command == "db-backup":
+        params = {}
+
+        if args.path is not None:
+            params["path"] = str(
+                Path(args.path)
+                .expanduser()
+                .resolve(strict=False)
+            )
+
+        result = await client.request(
+            "db_backup",
+            params,
         )
         _json(stdout, result)
         return (
