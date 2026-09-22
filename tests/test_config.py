@@ -116,3 +116,48 @@ def test_invalid_sandbox_is_rejected(
         ConfigError
     ):
         load_config(path)
+
+
+
+def test_log_rotation_config(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+log_rotate_bytes = 4096
+log_rotate_archives = 3
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert (
+        config.log_rotate_bytes
+        == 4096
+    )
+    assert (
+        config.log_rotate_archives
+        == 3
+    )
+
+
+def test_rotation_requires_archive_when_enabled(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+log_rotate_bytes = 4096
+log_rotate_archives = 0
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError
+    ):
+        load_config(path)

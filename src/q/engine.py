@@ -17,6 +17,7 @@ from .broker import (
     BrokerHTTPError,
     BrokerProtocolError,
 )
+from .logs import append_log_line
 from .models import (
     QueryRecord,
     QueryState,
@@ -166,6 +167,10 @@ class QueryEngine:
         default_tools_policy: ToolsPolicy = (
             ToolsPolicy.ENABLED
         ),
+        log_rotate_bytes: int = (
+            16 * 1024 * 1024
+        ),
+        log_rotate_archives: int = 5,
     ):
         self.store = store
         self.broker = broker
@@ -179,6 +184,12 @@ class QueryEngine:
         )
         self.default_tools_policy = (
             default_tools_policy
+        )
+        self.log_rotate_bytes = (
+            log_rotate_bytes
+        )
+        self.log_rotate_archives = (
+            log_rotate_archives
         )
 
         self._query_id_factory = (

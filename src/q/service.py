@@ -14,6 +14,7 @@ from .ipc import (
     IPCFrame,
     IPCRequest,
 )
+from .logs import stream_log_lines
 from .models import (
     QueryRecord,
     QueryState,
@@ -624,49 +625,25 @@ class QDService:
                 / f"{session_name}.ndjson"
             )
 
-        offset = 0
-
-        while True:
-            try:
-                with log_path.open(
-                    "r",
-                    encoding="utf-8",
-                ) as stream:
-                    stream.seek(offset)
-
-                    while True:
-                        line = stream.readline()
-
-                        if not line:
-                            break
-
-                        offset = stream.tell()
-
-                        yield (
-                            IPCFrame.event_frame(
-                                request.request_id,
-                                "log",
-                                {
-                                    "path": str(
-                                        log_path
-                                    ),
-                                    "line": (
-                                        line.rstrip(
-                                            "\n"
-                                        )
-                                    ),
-                                },
-                            )
-                        )
-
-            except FileNotFoundError:
-                pass
-
-            if not follow:
-                break
-
-            await asyncio.sleep(
-                0.2
+        async for line in (
+            stream_log_lines(
+                log_path,
+                archives=(
+                    self.engine
+                    .log_rotate_archives
+                ),
+                follow=follow,
+            )
+        ):
+            yield IPCFrame.event_frame(
+                request.request_id,
+                "log",
+                {
+                    "path": str(
+                        log_path
+                    ),
+                    "line": line,
+                },
             )
 
         yield IPCFrame.result_frame(

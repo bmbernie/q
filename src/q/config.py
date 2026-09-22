@@ -11,12 +11,18 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TOOLS_POLICY = ToolsPolicy.ENABLED
 DEFAULT_SANDBOX = "read-only"
+DEFAULT_LOG_ROTATE_BYTES = (
+    16 * 1024 * 1024
+)
+DEFAULT_LOG_ROTATE_ARCHIVES = 5
 
 _ALLOWED_KEYS = {
     "model",
     "reasoning_effort",
     "tools",
     "sandbox",
+    "log_rotate_bytes",
+    "log_rotate_archives",
 }
 
 _ALLOWED_SANDBOXES = {
@@ -40,6 +46,12 @@ class QConfig:
         DEFAULT_TOOLS_POLICY
     )
     sandbox: str = DEFAULT_SANDBOX
+    log_rotate_bytes: int = (
+        DEFAULT_LOG_ROTATE_BYTES
+    )
+    log_rotate_archives: int = (
+        DEFAULT_LOG_ROTATE_ARCHIVES
+    )
 
 
 def _nonempty_string(
@@ -57,6 +69,24 @@ def _nonempty_string(
         )
 
     return value.strip()
+
+
+def _nonnegative_int(
+    value,
+    *,
+    name: str,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+    ):
+        raise ConfigError(
+            f"{name} must be a "
+            "non-negative integer"
+        )
+
+    return value
 
 
 def load_config(
@@ -162,6 +192,36 @@ def load_config(
             "danger-full-access"
         )
 
+    log_rotate_bytes = (
+        _nonnegative_int(
+            data.get(
+                "log_rotate_bytes",
+                DEFAULT_LOG_ROTATE_BYTES,
+            ),
+            name="log_rotate_bytes",
+        )
+    )
+
+    log_rotate_archives = (
+        _nonnegative_int(
+            data.get(
+                "log_rotate_archives",
+                DEFAULT_LOG_ROTATE_ARCHIVES,
+            ),
+            name="log_rotate_archives",
+        )
+    )
+
+    if (
+        log_rotate_bytes > 0
+        and log_rotate_archives == 0
+    ):
+        raise ConfigError(
+            "log_rotate_archives must be "
+            "at least 1 when rotation "
+            "is enabled"
+        )
+
     return QConfig(
         model=model,
         reasoning_effort=(
@@ -169,4 +229,10 @@ def load_config(
         ),
         tools=tools,
         sandbox=sandbox,
+        log_rotate_bytes=(
+            log_rotate_bytes
+        ),
+        log_rotate_archives=(
+            log_rotate_archives
+        ),
     )

@@ -163,6 +163,12 @@ async def serve(
             default_tools_policy=(
                 config.tools
             ),
+            log_rotate_bytes=(
+                config.log_rotate_bytes
+            ),
+            log_rotate_archives=(
+                config.log_rotate_archives
+            ),
         )
 
         await engine.recover()
