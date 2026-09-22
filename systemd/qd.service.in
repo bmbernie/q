@@ -1,11 +1,10 @@
 [Unit]
 Description=q terminal query daemon
-After=network-online.target chatgpt-worker-broker.service
-Wants=network-online.target
-Requires=chatgpt-worker-broker.service
+After=network-online.target chatgpt-query-broker.service
+Wants=network-online.target chatgpt-query-broker.service
 
 [Service]
-Type=simple
+Type=notify
 WorkingDirectory=@Q_ROOT@
 
 Environment=Q_BROKER_URL=http://127.0.0.1:8792

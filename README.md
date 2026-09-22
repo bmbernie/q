@@ -16,7 +16,7 @@ qd
  |
  | HTTP / NDJSON
  v
-chatgpt-worker-broker
+chatgpt-query-broker
  |
  | JSON-RPC over stdio
  v
@@ -31,19 +31,13 @@ terminal and owns query lifecycle and persistence.
 ## Requirements
 
 - Python 3.13+
-- `chatgpt-worker-broker` running locally
+- `chatgpt-query-broker` running locally
 - Codex App Server configured by the broker
 - ChatGPT/Codex authentication already established
 
 ### Broker compatibility
 
-q/qd v0.2.0 requires the worker-broker capabilities present in:
-
-    q-v0.2.0-backend
-
-That broker tag resolves to:
-
-    919f89d56e16d816335a4227662dd4140e2b32ce
+q/qd requires a compatible `chatgpt-query-broker` deployment.
 
 Required broker capabilities include:
 
@@ -128,7 +122,7 @@ Default config:
 
 Current defaults:
 
-    model = "gpt-5.6-luna"
+    model = "gpt-6-luna"
     reasoning_effort = "xhigh"
     tools = "enabled"
     sandbox = "read-only"
@@ -236,7 +230,7 @@ Reasoning override:
 
 Model override:
 
-    q -m gpt-5.6-sol "Review this"
+    q -m gpt-6-sol "Review this"
 
 Tools:
 
@@ -350,7 +344,7 @@ The report includes:
 - SQLite `PRAGMA quick_check`
 - database schema version
 - WAL, synchronous, foreign-key, busy-timeout, and autocheckpoint settings
-- chatgpt-worker-broker reachability and `/health` status
+- chatgpt-query-broker reachability and `/health` status
 
 A healthy deployment reports:
 
@@ -397,7 +391,7 @@ If the daemon accepts the connection but does not complete the diagnostic
 within that window, the IPC check is marked unhealthy with
 `"timed_out": true`, and `qd doctor` exits nonzero.
 
-The chatgpt-worker-broker `/health` request also uses a 5 second deadline.
+The chatgpt-query-broker `/health` request also uses a 5 second deadline.
 A broker health timeout is reported as a failed broker diagnostic rather
 than blocking the command indefinitely.
 
@@ -795,10 +789,45 @@ The q IPC socket is created with mode 0600.
 
 The runtime directory is created with mode 0700.
 
+### Sandbox
+
+Tool availability and sandbox permissions are separate controls.
+
+The sandbox is the enforcement boundary for local filesystem access:
+
+    read-only
+
+Allows local inspection but prevents workspace modification. Use this when
+the query does not need to change local files.
+
+    workspace-write
+
+Allows the agent to modify files in the permitted workspace. This is
+appropriate for coding, editing, and other tasks that intentionally change
+the working tree.
+
+    danger-full-access
+
+Allows substantially broader local access. Use this only when the task
+explicitly requires it and the requested actions are trusted.
+
+Disabling tools is not a substitute for a restrictive sandbox. Codex may
+retain native capabilities such as file-change or patch operations even when
+broker-controlled tools are disabled. In particular, a writable sandbox can
+still permit local modification. Use `--sandbox read-only` when preventing
+local writes is a security requirement.
+
 ## Tools
 
 Tools are enabled by default unless configuration or an explicit q option
 disables them.
+
+`--tools` enables the backend tool policy for the query.
+
+`--no-tools` requests that broker-controlled tool features and integrations
+be disabled. It does not by itself guarantee that the model has no native
+local-operation capability; sandbox policy remains authoritative for local
+access.
 
 Both non-interactive and interactive Codex tool flows are supported.
 
@@ -822,7 +851,7 @@ Example:
       [e] accept with proposed exec-policy amendment
       [c] cancel
 
-Interaction responses are sent back through qd and the worker broker to the
+Interaction responses are sent back through qd and the query broker to the
 pending Codex App Server request.
 
 For detached queries submitted with -q or -qq, qd never auto-approves an

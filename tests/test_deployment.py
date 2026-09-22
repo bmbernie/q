@@ -35,9 +35,20 @@ def test_systemd_template_has_required_runtime():
         in text
     )
     assert (
-        "Requires=chatgpt-worker-broker.service"
+        "After=network-online.target "
+        "chatgpt-query-broker.service"
         in text
     )
+    assert (
+        "Wants=network-online.target "
+        "chatgpt-query-broker.service"
+        in text
+    )
+    assert (
+        "Requires=chatgpt-query-broker.service"
+        not in text
+    )
+    assert "Type=notify" in text
     assert "UMask=0077" in text
 
 
