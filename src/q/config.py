@@ -7,7 +7,7 @@ from pathlib import Path
 from .models import ToolsPolicy
 
 
-DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TOOLS_POLICY = ToolsPolicy.ENABLED
 DEFAULT_SANDBOX = "read-only"

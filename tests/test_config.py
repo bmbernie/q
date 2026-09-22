@@ -19,7 +19,7 @@ def test_missing_config_uses_defaults(
 
     assert (
         config.model
-        == "gpt-5.6-luna"
+        == "gpt-6-luna"
     )
     assert (
         config.reasoning_effort

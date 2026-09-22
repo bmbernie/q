@@ -288,7 +288,7 @@ def test_attached_submit_streams_and_completes(
                 broker.calls[0][
                     "model"
                 ]
-                == "gpt-5.6-luna"
+                == "gpt-6-luna"
             )
             assert (
                 broker.calls[0][

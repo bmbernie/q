@@ -162,7 +162,7 @@ class QueryEngine:
         state_dir: Path,
         query_id_factory: Callable[[], str]
         | None = None,
-        default_model: str = "gpt-5.6-luna",
+        default_model: str = "gpt-6-luna",
         default_reasoning_effort: str = "xhigh",
         default_tools_policy: ToolsPolicy = (
             ToolsPolicy.ENABLED
