@@ -327,6 +327,27 @@ complete report, sets:
 
 and exits with a nonzero status.
 
+Diagnostic network/IPC operations are bounded so `qd doctor` cannot wait
+indefinitely on an unresponsive dependency.
+
+The daemon IPC diagnostic uses a 5 second deadline. Its JSON result
+includes:
+
+    "timed_out": false
+    "timeout_seconds": 5.0
+
+If the daemon accepts the connection but does not complete the diagnostic
+within that window, the IPC check is marked unhealthy with
+`"timed_out": true`, and `qd doctor` exits nonzero.
+
+The chatgpt-worker-broker `/health` request also uses a 5 second deadline.
+A broker health timeout is reported as a failed broker diagnostic rather
+than blocking the command indefinitely.
+
+These deadlines apply only to operational diagnostics. Normal attached
+queries, streaming output, log following, and other long-lived q
+operations keep their existing streaming behavior.
+
 If qd cannot be reached, local configuration, filesystem, and socket
 diagnostics remain available while daemon-side database and broker
 diagnostics are reported as unavailable.
