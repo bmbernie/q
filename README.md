@@ -251,6 +251,39 @@ Check the q state database:
 
     qd db-check
 
+Create a consistent database backup:
+
+    qd db-backup
+
+Or choose an explicit destination:
+
+    qd db-backup ./q-backup.sqlite3
+
+Without a path, backups are written under:
+
+    ~/.local/share/q/backups/
+
+using names like:
+
+    q-YYYYMMDD-HHMMSS.sqlite3
+
+`qd db-backup` uses SQLite's backup API while qd remains running, so the
+snapshot is transactionally consistent even when the live database is in
+WAL mode.
+
+Before publishing the snapshot, q verifies it with SQLite
+`PRAGMA quick_check`.
+
+Backup files:
+
+- are standalone SQLite files
+- do not require `-wal` or `-shm` sidecars
+- are created with mode `0600`
+- are never allowed to overwrite an existing destination
+
+The command returns structured JSON containing the backup path, size, and
+quick-check result.
+
 `qd db-check` runs SQLite `PRAGMA quick_check` through the same `QStore`
 connection used by qd and reports the active durability/concurrency
 settings, including:
