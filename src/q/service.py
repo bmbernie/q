@@ -345,16 +345,14 @@ class QDService:
         model = _optional_string(
             params,
             "model",
-            default=self.config.model,
+            default=None,
         )
 
         reasoning_effort = (
             _optional_string(
                 params,
                 "reasoning_effort",
-                default=(
-                    self.config.reasoning_effort
-                ),
+                default=None,
             )
         )
 
@@ -400,8 +398,6 @@ class QDService:
             default=not detached,
         )
 
-        assert model is not None
-        assert reasoning_effort is not None
         assert sandbox is not None
 
         query = await self.engine.submit(

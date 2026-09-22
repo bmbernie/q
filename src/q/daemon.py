@@ -154,6 +154,12 @@ async def serve(
             state_dir=(
                 paths.state_dir
             ),
+            default_model=(
+                config.model
+            ),
+            default_reasoning_effort=(
+                config.reasoning_effort
+            ),
             default_tools_policy=(
                 config.tools
             ),

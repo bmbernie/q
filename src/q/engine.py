@@ -61,6 +61,8 @@ class QueryEngine:
         state_dir: Path,
         query_id_factory: Callable[[], str]
         | None = None,
+        default_model: str = "gpt-5.6-luna",
+        default_reasoning_effort: str = "xhigh",
         default_tools_policy: ToolsPolicy = (
             ToolsPolicy.ENABLED
         ),
@@ -71,6 +73,10 @@ class QueryEngine:
             state_dir.expanduser()
         )
 
+        self.default_model = default_model
+        self.default_reasoning_effort = (
+            default_reasoning_effort
+        )
         self.default_tools_policy = (
             default_tools_policy
         )
@@ -108,8 +114,8 @@ class QueryEngine:
         input_text: str,
         cwd: str,
         session_name: str | None = None,
-        model: str = "gpt-5.6-luna",
-        reasoning_effort: str = "xhigh",
+        model: str | None = None,
+        reasoning_effort: str | None = None,
         tools_policy: ToolsPolicy | None = None,
         sandbox: str = "read-only",
         detached: bool = False,
@@ -126,6 +132,15 @@ class QueryEngine:
             )
 
         session_log_path = None
+
+        effective_model = (
+            model
+            or self.default_model
+        )
+        effective_reasoning_effort = (
+            reasoning_effort
+            or self.default_reasoning_effort
+        )
         effective_tools_policy = (
             tools_policy
             or self.default_tools_policy
@@ -142,9 +157,9 @@ class QueryEngine:
                         session_name=(
                             session_name
                         ),
-                        model=model,
+                        model=effective_model,
                         reasoning_effort=(
-                            reasoning_effort
+                            effective_reasoning_effort
                         ),
                         tools_policy=(
                             effective_tools_policy
@@ -162,6 +177,16 @@ class QueryEngine:
                 )
 
             else:
+                if model is None:
+                    effective_model = (
+                        session.model
+                    )
+
+                if reasoning_effort is None:
+                    effective_reasoning_effort = (
+                        session.reasoning_effort
+                    )
+
                 if (
                     tools_policy is not None
                     and session.tools_policy
@@ -195,9 +220,9 @@ class QueryEngine:
         query = self.store.create_query(
             query_id=query_id,
             session_name=session_name,
-            model=model,
+            model=effective_model,
             reasoning_effort=(
-                reasoning_effort
+                effective_reasoning_effort
             ),
             tools_policy=(
                 effective_tools_policy

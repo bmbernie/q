@@ -187,6 +187,12 @@ def make_stack(
         query_id_factory=(
             lambda: next(counter)
         ),
+        default_model=(
+            config.model
+        ),
+        default_reasoning_effort=(
+            config.reasoning_effort
+        ),
         default_tools_policy=(
             config.tools
         ),
@@ -1007,6 +1013,99 @@ def test_config_defaults_apply_to_new_query(
                 call["sandbox"]
                 == "workspace-write"
             )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+
+def test_existing_session_inherits_saved_model_and_reasoning(
+    tmp_path,
+):
+    async def run():
+        first_config = QConfig(
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools=ToolsPolicy.ENABLED,
+            sandbox="read-only",
+        )
+
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(
+            tmp_path,
+            config=first_config,
+        )
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            first = await client.request(
+                "submit",
+                {
+                    "input": "first-session-turn",
+                    "cwd": "/tmp",
+                    "session_name": "stable",
+                },
+            )
+
+            assert first["model"] == "gpt-5.6-luna"
+            assert first["reasoning_effort"] == "xhigh"
+
+            # Simulate daemon configuration changing after
+            # the named session was originally created.
+            engine.default_model = "gpt-5.6-sol"
+            engine.default_reasoning_effort = "high"
+
+            second = await client.request(
+                "submit",
+                {
+                    "input": "second-session-turn",
+                    "cwd": "/tmp",
+                    "session_name": "stable",
+                },
+            )
+
+            assert second["model"] == "gpt-5.6-luna"
+            assert second["reasoning_effort"] == "xhigh"
+
+            assert broker.calls[1]["model"] == "gpt-5.6-luna"
+            assert (
+                broker.calls[1]["reasoning_effort"]
+                == "xhigh"
+            )
+
+            # Explicit per-turn overrides are allowed, but
+            # they do not rewrite the saved session defaults.
+            third = await client.request(
+                "submit",
+                {
+                    "input": "override-turn",
+                    "cwd": "/tmp",
+                    "session_name": "stable",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                },
+            )
+
+            assert third["model"] == "gpt-5.6-sol"
+            assert third["reasoning_effort"] == "high"
+
+            session = store.get_session("stable")
+
+            assert session is not None
+            assert session.model == "gpt-5.6-luna"
+            assert session.reasoning_effort == "xhigh"
 
         finally:
             await server.aclose()
