@@ -287,6 +287,18 @@ class QDService:
 
             if (
                 request.method
+                == "restart_guard_renew"
+            ):
+                yield (
+                    self
+                    ._restart_guard_renew(
+                        request
+                    )
+                )
+                return
+
+            if (
+                request.method
                 == "restart_guard_release"
             ):
                 yield (
@@ -398,11 +410,24 @@ class QDService:
     ) -> IPCFrame:
         (
             acquired,
+            token,
             running,
         ) = (
             self.engine
             .try_acquire_restart_guard()
         )
+
+        if acquired:
+            reason = None
+
+        elif running:
+            reason = "running_queries"
+
+        elif self.engine.restart_guarded:
+            reason = "already_guarded"
+
+        else:
+            reason = "unavailable"
 
         return IPCFrame.result_frame(
             request.request_id,
@@ -412,6 +437,12 @@ class QDService:
                     self.engine
                     .restart_guarded
                 ),
+                "token": token,
+                "lease_seconds": (
+                    self.engine
+                    .restart_guard_lease_seconds
+                ),
+                "reason": reason,
                 "running_query_ids": [
                     query.query_id
                     for query in running
@@ -419,13 +450,51 @@ class QDService:
             },
         )
 
+    def _restart_guard_renew(
+        self,
+        request: IPCRequest,
+    ) -> IPCFrame:
+        token = _required_string(
+            request.params,
+            "token",
+        )
+
+        renewed = (
+            self.engine
+            .renew_restart_guard(
+                token
+            )
+        )
+
+        return IPCFrame.result_frame(
+            request.request_id,
+            {
+                "renewed": renewed,
+                "guarded": (
+                    self.engine
+                    .restart_guarded
+                ),
+                "lease_seconds": (
+                    self.engine
+                    .restart_guard_lease_seconds
+                ),
+            },
+        )
+
     def _restart_guard_release(
         self,
         request: IPCRequest,
     ) -> IPCFrame:
+        token = _required_string(
+            request.params,
+            "token",
+        )
+
         released = (
             self.engine
-            .release_restart_guard()
+            .release_restart_guard(
+                token
+            )
         )
 
         return IPCFrame.result_frame(

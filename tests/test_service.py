@@ -1583,13 +1583,27 @@ def test_restart_guard_refuses_running_query(
                 "restart_guard_acquire"
             )
 
-            assert result == {
-                "acquired": False,
-                "guarded": False,
-                "running_query_ids": [
+            assert (
+                result["acquired"]
+                is False
+            )
+            assert (
+                result["guarded"]
+                is False
+            )
+            assert result["token"] is None
+            assert (
+                result["reason"]
+                == "running_queries"
+            )
+            assert (
+                result[
+                    "running_query_ids"
+                ]
+                == [
                     submitted["query_id"]
-                ],
-            }
+                ]
+            )
 
             broker.release[
                 "guard-running"
@@ -1633,11 +1647,26 @@ def test_restart_guard_rejects_new_submit(
                 "restart_guard_acquire"
             )
 
-            assert result == {
-                "acquired": True,
-                "guarded": True,
-                "running_query_ids": [],
-            }
+            assert (
+                result["acquired"]
+                is True
+            )
+            assert (
+                result["guarded"]
+                is True
+            )
+            assert isinstance(
+                result["token"],
+                str,
+            )
+            assert result["token"]
+            assert result["reason"] is None
+            assert (
+                result["lease_seconds"]
+                == 300.0
+            )
+
+            token = result["token"]
 
             with pytest.raises(
                 IPCRemoteError
@@ -1657,7 +1686,10 @@ def test_restart_guard_rejects_new_submit(
             )
 
             released = await client.request(
-                "restart_guard_release"
+                "restart_guard_release",
+                {
+                    "token": token,
+                },
             )
 
             assert released == {
@@ -1697,12 +1729,18 @@ def test_restart_guard_freezes_queued_boundary(
                 stdout_attached=False,
             )
 
-            acquired, running = (
+            (
+                acquired,
+                token,
+                running,
+            ) = (
                 engine
                 .try_acquire_restart_guard()
             )
 
             assert acquired is True
+            assert isinstance(token, str)
+            assert token
             assert running == []
 
             # Give the scheduled task an
@@ -1726,7 +1764,9 @@ def test_restart_guard_freezes_queued_boundary(
             )
 
             assert (
-                engine.release_restart_guard()
+                engine.release_restart_guard(
+                    token
+                )
                 is True
             )
 
@@ -1749,6 +1789,191 @@ def test_restart_guard_freezes_queued_boundary(
 
             broker.release[
                 "guard-queued"
+            ].set()
+
+            final = await engine.wait(
+                query.query_id
+            )
+
+            assert (
+                final.state
+                == QueryState.COMPLETED
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_restart_guard_requires_owner_token(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            _broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            acquired = await client.request(
+                "restart_guard_acquire"
+            )
+
+            token = acquired["token"]
+
+            wrong_release = (
+                await client.request(
+                    "restart_guard_release",
+                    {
+                        "token": "wrong-token",
+                    },
+                )
+            )
+
+            assert (
+                wrong_release["released"]
+                is False
+            )
+            assert (
+                wrong_release["guarded"]
+                is True
+            )
+
+            wrong_renew = (
+                await client.request(
+                    "restart_guard_renew",
+                    {
+                        "token": "wrong-token",
+                    },
+                )
+            )
+
+            assert (
+                wrong_renew["renewed"]
+                is False
+            )
+            assert (
+                wrong_renew["guarded"]
+                is True
+            )
+
+            renewed = await client.request(
+                "restart_guard_renew",
+                {
+                    "token": token,
+                },
+            )
+
+            assert renewed["renewed"] is True
+            assert renewed["guarded"] is True
+
+            released = await client.request(
+                "restart_guard_release",
+                {
+                    "token": token,
+                },
+            )
+
+            assert released == {
+                "released": True,
+                "guarded": False,
+            }
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_restart_guard_lease_expiry_resumes_execution(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            _socket,
+        ) = make_stack(tmp_path)
+
+        engine.restart_guard_lease_seconds = (
+            0.05
+        )
+
+        broker.block("lease-expiry")
+
+        await server.start()
+
+        try:
+            query = await engine.submit(
+                input_text="lease-expiry",
+                cwd="/tmp",
+                detached=True,
+                stdout_attached=False,
+            )
+
+            (
+                acquired,
+                token,
+                running,
+            ) = (
+                engine
+                .try_acquire_restart_guard()
+            )
+
+            assert acquired is True
+            assert token is not None
+            assert running == []
+
+            await asyncio.sleep(0)
+
+            current = store.get_query(
+                query.query_id
+            )
+
+            assert current is not None
+            assert (
+                current.state
+                == QueryState.QUEUED
+            )
+
+            await asyncio.wait_for(
+                broker.started[
+                    "lease-expiry"
+                ].wait(),
+                timeout=1,
+            )
+
+            assert (
+                engine.restart_guarded
+                is False
+            )
+
+            current = store.get_query(
+                query.query_id
+            )
+
+            assert current is not None
+            assert (
+                current.state
+                == QueryState.RUNNING
+            )
+
+            broker.release[
+                "lease-expiry"
             ].set()
 
             final = await engine.wait(

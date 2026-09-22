@@ -219,7 +219,12 @@ class QueryEngine:
 
         self._closing = False
 
-        self._restart_guarded = False
+        self.restart_guard_lease_seconds = 300.0
+        self._restart_guard_token: str | None = None
+        self._restart_guard_expiry_task: (
+            asyncio.Task[None] | None
+        ) = None
+
         self._execution_allowed = asyncio.Event()
         self._execution_allowed.set()
 
@@ -241,7 +246,7 @@ class QueryEngine:
                 "query engine is closing"
             )
 
-        if self._restart_guarded:
+        if self.restart_guarded:
             raise RuntimeError(
                 "query submissions are disabled "
                 "while restart guard is active"
@@ -377,12 +382,16 @@ class QueryEngine:
 
     @property
     def restart_guarded(self) -> bool:
-        return self._restart_guarded
+        return (
+            self._restart_guard_token
+            is not None
+        )
 
     def try_acquire_restart_guard(
         self,
     ) -> tuple[
         bool,
+        str | None,
         list[QueryRecord],
     ]:
         if self._closing:
@@ -390,29 +399,118 @@ class QueryEngine:
                 "query engine is closing"
             )
 
-        if self._restart_guarded:
-            return True, []
+        if self.restart_guarded:
+            return False, None, []
 
         running = self.store.list_queries(
             state=QueryState.RUNNING
         )
 
         if running:
-            return False, running
+            return False, None, running
 
-        self._restart_guarded = True
+        token = uuid.uuid4().hex
+
+        self._restart_guard_token = token
         self._execution_allowed.clear()
+        self._arm_restart_guard_expiry(
+            token
+        )
 
-        return True, []
+        return True, token, []
 
-    def release_restart_guard(self) -> bool:
-        if not self._restart_guarded:
+    def renew_restart_guard(
+        self,
+        token: str,
+    ) -> bool:
+        if (
+            not self.restart_guarded
+            or token
+            != self._restart_guard_token
+        ):
             return False
 
-        self._restart_guarded = False
-        self._execution_allowed.set()
+        self._arm_restart_guard_expiry(
+            token
+        )
 
         return True
+
+    def release_restart_guard(
+        self,
+        token: str,
+    ) -> bool:
+        if (
+            not self.restart_guarded
+            or token
+            != self._restart_guard_token
+        ):
+            return False
+
+        self._clear_restart_guard(
+            cancel_expiry=True
+        )
+
+        return True
+
+    def _arm_restart_guard_expiry(
+        self,
+        token: str,
+    ) -> None:
+        previous = (
+            self._restart_guard_expiry_task
+        )
+
+        if previous is not None:
+            previous.cancel()
+
+        self._restart_guard_expiry_task = (
+            asyncio.create_task(
+                self._expire_restart_guard(
+                    token
+                ),
+                name="q:restart-guard-expiry",
+            )
+        )
+
+    async def _expire_restart_guard(
+        self,
+        token: str,
+    ) -> None:
+        try:
+            await asyncio.sleep(
+                self.restart_guard_lease_seconds
+            )
+
+        except asyncio.CancelledError:
+            return
+
+        if (
+            self._restart_guard_token
+            == token
+        ):
+            self._clear_restart_guard(
+                cancel_expiry=False
+            )
+
+    def _clear_restart_guard(
+        self,
+        *,
+        cancel_expiry: bool,
+    ) -> None:
+        task = (
+            self._restart_guard_expiry_task
+        )
+
+        self._restart_guard_expiry_task = None
+        self._restart_guard_token = None
+        self._execution_allowed.set()
+
+        if (
+            cancel_expiry
+            and task is not None
+        ):
+            task.cancel()
 
     def _schedule(
         self,
@@ -719,6 +817,21 @@ class QueryEngine:
 
     async def aclose(self) -> None:
         self._closing = True
+
+        guard_task = (
+            self._restart_guard_expiry_task
+        )
+
+        self._restart_guard_expiry_task = None
+        self._restart_guard_token = None
+        self._execution_allowed.set()
+
+        if guard_task is not None:
+            guard_task.cancel()
+            await asyncio.gather(
+                guard_task,
+                return_exceptions=True,
+            )
 
         tasks = list(
             self._tasks.values()

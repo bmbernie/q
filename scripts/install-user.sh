@@ -12,6 +12,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/q"
 SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
 RESTART_GUARD_ACQUIRED=0
+RESTART_GUARD_TOKEN=""
 
 release_restart_guard() {
   if [ "$RESTART_GUARD_ACQUIRED" -ne 1 ]; then
@@ -20,20 +21,29 @@ release_restart_guard() {
 
   set +e
 
-  "$VENV/bin/python" - <<'PYRELEASE'
+  Q_RESTART_GUARD_TOKEN="$RESTART_GUARD_TOKEN" \
+    "$VENV/bin/python" - <<'PYRELEASE'
 import asyncio
+import os
 
 from q.ipc import IPCClient
 from q.paths import resolve_paths
 
 
 async def release() -> None:
+    token = os.environ[
+        "Q_RESTART_GUARD_TOKEN"
+    ]
+
     try:
         result = await asyncio.wait_for(
             IPCClient(
                 resolve_paths().socket_path
             ).request(
-                "restart_guard_release"
+                "restart_guard_release",
+                {
+                    "token": token,
+                },
             ),
             timeout=5.0,
         )
@@ -54,6 +64,58 @@ asyncio.run(release())
 PYRELEASE
 }
 
+renew_restart_guard() {
+  Q_RESTART_GUARD_TOKEN="$RESTART_GUARD_TOKEN" \
+    "$VENV/bin/python" - <<'PYRENEW'
+import asyncio
+import os
+
+from q.ipc import IPCClient
+from q.paths import resolve_paths
+
+
+async def renew() -> None:
+    token = os.environ[
+        "Q_RESTART_GUARD_TOKEN"
+    ]
+
+    try:
+        result = await asyncio.wait_for(
+            IPCClient(
+                resolve_paths().socket_path
+            ).request(
+                "restart_guard_renew",
+                {
+                    "token": token,
+                },
+            ),
+            timeout=5.0,
+        )
+
+    except Exception as exc:
+        raise SystemExit(
+            "cannot safely restart qd: "
+            "restart guard renewal failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    if (
+        not isinstance(result, dict)
+        or result.get("renewed") is not True
+        or result.get("guarded") is not True
+    ):
+        raise SystemExit(
+            "cannot safely restart qd: "
+            "restart guard lease was lost"
+        )
+
+    print("qd restart guard renewed")
+
+
+asyncio.run(renew())
+PYRENEW
+}
+
 trap release_restart_guard EXIT
 
 printf '%s\n' '--- q install ---'
@@ -67,7 +129,8 @@ if systemctl --user is-active --quiet qd.service; then
     exit 1
   fi
 
-  "$VENV/bin/python" - <<'PYGUARD'
+  if ! RESTART_GUARD_TOKEN="$(
+    "$VENV/bin/python" - <<'PYGUARD'
 import asyncio
 
 from q.ipc import IPCClient
@@ -103,21 +166,30 @@ async def acquire() -> None:
     )
 
     if result.get("acquired") is not True:
-        if isinstance(running, list):
-            detail = (
-                ", ".join(
-                    str(item)
-                    for item in running
+        if (
+            result.get("reason")
+            == "running_queries"
+        ):
+            if isinstance(running, list):
+                detail = (
+                    ", ".join(
+                        str(item)
+                        for item in running
+                    )
+                    or "unknown"
                 )
-                or "unknown"
+            else:
+                detail = "unknown"
+
+            raise SystemExit(
+                "refusing to restart qd while "
+                "queries are running: "
+                f"{detail}"
             )
-        else:
-            detail = "unknown"
 
         raise SystemExit(
-            "refusing to restart qd while "
-            "queries are running: "
-            f"{detail}"
+            "cannot safely restart active qd: "
+            "restart guard is already held"
         )
 
     if result.get("guarded") is not True:
@@ -126,13 +198,30 @@ async def acquire() -> None:
             "restart guard was not activated"
         )
 
-    print("qd restart guard acquired")
+    token = result.get("token")
+
+    if (
+        not isinstance(token, str)
+        or not token
+    ):
+        raise SystemExit(
+            "cannot safely restart active qd: "
+            "restart guard response did not "
+            "include an owner token"
+        )
+
+    print(token)
 
 
 asyncio.run(acquire())
 PYGUARD
+  )"; then
+    exit 1
+  fi
 
   RESTART_GUARD_ACQUIRED=1
+  printf '%s\n' \
+    'qd restart guard acquired'
 fi
 
 if [ ! -x "$VENV/bin/python" ]; then
@@ -202,12 +291,18 @@ PY
 
 systemctl --user daemon-reload
 systemctl --user enable qd.service
+
+if [ "$RESTART_GUARD_ACQUIRED" -eq 1 ]; then
+  renew_restart_guard
+fi
+
 systemctl --user restart qd.service
 
 # A successful restart destroys the guarded
 # daemon process. The newly started daemon has
 # no restart guard active.
 RESTART_GUARD_ACQUIRED=0
+RESTART_GUARD_TOKEN=""
 
 "$VENV/bin/python" - <<'PYREADY'
 import asyncio

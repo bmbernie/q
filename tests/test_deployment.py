@@ -79,6 +79,22 @@ def test_install_script_preserves_existing_config():
         in text
     )
     assert (
+        '"restart_guard_renew"'
+        in text
+    )
+    assert (
+        "RESTART_GUARD_TOKEN"
+        in text
+    )
+    assert (
+        "qd restart guard renewed"
+        in text
+    )
+    assert (
+        "restart guard lease was lost"
+        in text
+    )
+    assert (
         "qd restart guard acquired"
         in text
     )
