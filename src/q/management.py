@@ -7,10 +7,15 @@ from pathlib import Path
 import sys
 from typing import TextIO
 
+from .doctor import local_doctor
 from .ipc import (
     IPCClient,
     IPCRemoteError,
     default_socket_path,
+)
+from .paths import (
+    QPaths,
+    resolve_paths,
 )
 
 
@@ -65,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "db-check",
         help="check q state database health",
+    )
+
+    subparsers.add_parser(
+        "doctor",
+        help=(
+            "run q operational diagnostics"
+        ),
     )
 
     restore = subparsers.add_parser(
@@ -146,6 +158,7 @@ async def run_management(
     args: argparse.Namespace,
     client: IPCClient,
     stdout: TextIO,
+    paths: QPaths | None = None,
 ) -> int:
     command = args.command
 
@@ -192,6 +205,117 @@ async def run_management(
         )
         _json(stdout, result)
         return 0
+
+    if command == "doctor":
+        if paths is None:
+            paths = resolve_paths()
+
+        local = local_doctor(
+            paths
+        )
+
+        ipc: dict = {
+            "ok": False,
+        }
+
+        remote = None
+
+        try:
+            remote = await client.request(
+                "doctor"
+            )
+
+        except Exception as exc:
+            ipc["error"] = (
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            )
+
+        else:
+            ipc["ok"] = True
+
+        if isinstance(
+            remote,
+            dict,
+        ):
+            database = remote.get(
+                "database"
+            )
+            broker = remote.get(
+                "broker"
+            )
+
+        else:
+            database = None
+            broker = None
+
+        if not isinstance(
+            database,
+            dict,
+        ):
+            database = {
+                "ok": False,
+                "available": False,
+                "error": (
+                    "database diagnostics "
+                    "unavailable"
+                ),
+            }
+
+        if not isinstance(
+            broker,
+            dict,
+        ):
+            broker = {
+                "ok": False,
+                "available": False,
+                "error": (
+                    "broker diagnostics "
+                    "unavailable"
+                ),
+            }
+
+        result = {
+            "ok": (
+                local["ok"]
+                and ipc["ok"]
+                and database.get(
+                    "ok"
+                )
+                is True
+                and broker.get(
+                    "ok"
+                )
+                is True
+            ),
+            "configuration": (
+                local[
+                    "configuration"
+                ]
+            ),
+            "filesystem": (
+                local["filesystem"]
+            ),
+            "daemon": {
+                "socket": (
+                    local["socket"]
+                ),
+                "ipc": ipc,
+            },
+            "database": database,
+            "broker": broker,
+        }
+
+        _json(
+            stdout,
+            result,
+        )
+
+        return (
+            0
+            if result["ok"]
+            else 1
+        )
 
     if command == "db-check":
         result = await client.request(
@@ -342,6 +466,7 @@ async def _async_main(
         args=args,
         client=client,
         stdout=sys.stdout,
+        paths=resolve_paths(),
     )
 
 

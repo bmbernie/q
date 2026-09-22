@@ -21,7 +21,10 @@ from .models import (
     SessionRecord,
     ToolsPolicy,
 )
-from .store import QStore
+from .store import (
+    QStore,
+    SCHEMA_VERSION,
+)
 
 
 _SANDBOXES = {
@@ -274,6 +277,12 @@ class QDService:
                 )
                 return
 
+            if request.method == "doctor":
+                yield await self._doctor(
+                    request
+                )
+                return
+
             if request.method == "db_backup":
                 raw_path = _optional_string(
                     request.params,
@@ -355,6 +364,95 @@ class QDService:
                 code="conflict",
                 message=str(exc),
             )
+
+    async def _doctor(
+        self,
+        request: IPCRequest,
+    ) -> IPCFrame:
+        health = self.store.quick_check()
+        schema_version = (
+            self.store._schema_version()
+        )
+
+        settings_ok = (
+            schema_version
+            == SCHEMA_VERSION
+            and health.get(
+                "journal_mode"
+            )
+            == "wal"
+            and health.get(
+                "synchronous"
+            )
+            == 2
+            and health.get(
+                "foreign_keys"
+            )
+            is True
+            and health.get(
+                "busy_timeout"
+            )
+            == 5000
+            and health.get(
+                "wal_autocheckpoint"
+            )
+            == 1000
+        )
+
+        database = {
+            **health,
+            "schema_version": (
+                schema_version
+            ),
+            "expected_schema_version": (
+                SCHEMA_VERSION
+            ),
+            "settings_ok": settings_ok,
+        }
+
+        database["ok"] = (
+            health.get("ok") is True
+            and settings_ok
+        )
+
+        try:
+            broker_health = (
+                await self.engine
+                .broker.health()
+            )
+
+        except BrokerError as exc:
+            broker = {
+                "ok": False,
+                "reachable": False,
+                "error": str(exc),
+            }
+
+        else:
+            broker = {
+                "ok": (
+                    broker_health.get(
+                        "ok"
+                    )
+                    is True
+                ),
+                "reachable": True,
+                "health": broker_health,
+            }
+
+        result = {
+            "ok": (
+                database["ok"]
+                and broker["ok"]
+            ),
+            "database": database,
+            "broker": broker,
+        }
+
+        return IPCFrame.result_frame(
+            request.request_id,
+            result,
+        )
 
     async def _submit(
         self,

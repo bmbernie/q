@@ -1399,3 +1399,140 @@ def test_db_backup_creates_consistent_snapshot(
             store.close()
 
     asyncio.run(run())
+
+
+def test_doctor_reports_database_and_broker_health(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        async def health():
+            return {
+                "ok": True,
+                "workers": 5,
+            }
+
+        broker.health = health
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "doctor"
+            )
+
+            assert result["ok"] is True
+
+            assert (
+                result["database"]["ok"]
+                is True
+            )
+
+            assert (
+                result["database"][
+                    "schema_version"
+                ]
+                == 2
+            )
+
+            assert (
+                result["database"][
+                    "expected_schema_version"
+                ]
+                == 2
+            )
+
+            assert (
+                result["database"][
+                    "settings_ok"
+                ]
+                is True
+            )
+
+            assert (
+                result["broker"]["ok"]
+                is True
+            )
+
+            assert (
+                result["broker"][
+                    "reachable"
+                ]
+                is True
+            )
+
+            assert (
+                result["broker"][
+                    "health"
+                ]["workers"]
+                == 5
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_doctor_reports_unhealthy_broker(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        async def health():
+            return {
+                "ok": False,
+                "workers": 0,
+            }
+
+        broker.health = health
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "doctor"
+            )
+
+            assert result["ok"] is False
+            assert (
+                result["database"]["ok"]
+                is True
+            )
+            assert (
+                result["broker"]["ok"]
+                is False
+            )
+            assert (
+                result["broker"][
+                    "reachable"
+                ]
+                is True
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())

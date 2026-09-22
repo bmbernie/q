@@ -41,6 +41,11 @@ class BrokerHTTPError(BrokerError):
 
 
 class Broker(Protocol):
+    async def health(
+        self,
+    ) -> dict[str, Any]:
+        ...
+
     def stream_query(
         self,
         *,
@@ -99,6 +104,60 @@ class HTTPBroker:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    async def health(
+        self,
+    ) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                f"{self.base_url}/health"
+            )
+
+        except httpx.HTTPError as exc:
+            raise BrokerTransportError(
+                str(exc)
+            ) from exc
+
+        if response.status_code >= 400:
+            raise BrokerHTTPError(
+                status_code=(
+                    response.status_code
+                ),
+                code="broker_health_error",
+                message=(
+                    response.reason_phrase
+                    or "broker health check failed"
+                ),
+            )
+
+        try:
+            payload = response.json()
+
+        except (
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
+            raise BrokerProtocolError(
+                "broker health response "
+                "is not valid JSON"
+            ) from exc
+
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            raise BrokerProtocolError(
+                "broker health response "
+                "must be an object"
+            )
+
+        if payload.get("ok") is not True:
+            raise BrokerProtocolError(
+                "broker health response "
+                "is not healthy"
+            )
+
+        return payload
 
     def stream_query(
         self,
