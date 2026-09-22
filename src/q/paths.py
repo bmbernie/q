@@ -12,6 +12,7 @@ class QPaths:
     lock_path: Path
     database_path: Path
     state_dir: Path
+    config_path: Path
 
 
 def resolve_paths(
@@ -54,6 +55,15 @@ def resolve_paths(
         else home / ".local" / "share"
     )
 
+    config_raw = env.get(
+        "XDG_CONFIG_HOME"
+    )
+    config_home = (
+        Path(config_raw)
+        if config_raw
+        else home / ".config"
+    )
+
     state_raw = env.get(
         "XDG_STATE_HOME"
     )
@@ -79,5 +89,10 @@ def resolve_paths(
         ),
         state_dir=(
             state_home / "q"
+        ),
+        config_path=(
+            config_home
+            / "q"
+            / "config.toml"
         ),
     )

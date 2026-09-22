@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from q.config import QConfig
 from q.engine import QueryEngine
 from q.ipc import (
     IPCClient,
@@ -156,7 +157,14 @@ class FakeBroker:
             gate.set()
 
 
-def make_stack(tmp_path):
+def make_stack(
+    tmp_path,
+    *,
+    config=None,
+):
+    if config is None:
+        config = QConfig()
+
     store = QStore(
         tmp_path / "q.sqlite3"
     )
@@ -179,11 +187,15 @@ def make_stack(tmp_path):
         query_id_factory=(
             lambda: next(counter)
         ),
+        default_tools_policy=(
+            config.tools
+        ),
     )
 
     service = QDService(
         store=store,
         engine=engine,
+        config=config,
     )
 
     socket = (
@@ -919,6 +931,82 @@ def test_logs_expose_global_and_session_ndjson(
                 / "state"
                 / "q.ndjson"
             ).exists()
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+
+def test_config_defaults_apply_to_new_query(
+    tmp_path,
+):
+    async def run():
+        config = QConfig(
+            model="gpt-5.6-sol",
+            reasoning_effort="high",
+            tools=ToolsPolicy.DISABLED,
+            sandbox="workspace-write",
+        )
+
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(
+            tmp_path,
+            config=config,
+        )
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "configured",
+                    "cwd": "/tmp",
+                },
+            )
+
+            assert (
+                result["model"]
+                == "gpt-5.6-sol"
+            )
+            assert (
+                result["reasoning_effort"]
+                == "high"
+            )
+            assert (
+                result["tools_policy"]
+                == "disabled"
+            )
+
+            call = broker.calls[0]
+
+            assert (
+                call["model"]
+                == "gpt-5.6-sol"
+            )
+            assert (
+                call["reasoning_effort"]
+                == "high"
+            )
+            assert (
+                call["tools_policy"]
+                == ToolsPolicy.DISABLED
+            )
+            assert (
+                call["sandbox"]
+                == "workspace-write"
+            )
 
         finally:
             await server.aclose()

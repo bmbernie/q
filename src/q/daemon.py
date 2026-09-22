@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 
 from .broker import HTTPBroker
+from .config import (
+    ConfigError,
+    load_config,
+)
 from .engine import QueryEngine
 from .ipc import IPCServer
 from .paths import (
@@ -136,6 +140,10 @@ async def serve(
     server: IPCServer | None = None
 
     try:
+        config = load_config(
+            paths.config_path
+        )
+
         store = QStore(
             paths.database_path
         )
@@ -146,6 +154,9 @@ async def serve(
             state_dir=(
                 paths.state_dir
             ),
+            default_tools_policy=(
+                config.tools
+            ),
         )
 
         await engine.recover()
@@ -153,6 +164,7 @@ async def serve(
         service = QDService(
             store=store,
             engine=engine,
+            config=config,
         )
 
         server = IPCServer(
@@ -260,7 +272,10 @@ def main(
             _main()
         )
 
-    except DaemonAlreadyRunning as exc:
+    except (
+        DaemonAlreadyRunning,
+        ConfigError,
+    ) as exc:
         raise SystemExit(
             str(exc)
         ) from exc

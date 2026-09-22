@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+from .models import ToolsPolicy
+
+
+DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_REASONING_EFFORT = "xhigh"
+DEFAULT_TOOLS_POLICY = ToolsPolicy.ENABLED
+DEFAULT_SANDBOX = "read-only"
+
+_ALLOWED_KEYS = {
+    "model",
+    "reasoning_effort",
+    "tools",
+    "sandbox",
+}
+
+_ALLOWED_SANDBOXES = {
+    "read-only",
+    "workspace-write",
+    "danger-full-access",
+}
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class QConfig:
+    model: str = DEFAULT_MODEL
+    reasoning_effort: str = (
+        DEFAULT_REASONING_EFFORT
+    )
+    tools: ToolsPolicy = (
+        DEFAULT_TOOLS_POLICY
+    )
+    sandbox: str = DEFAULT_SANDBOX
+
+
+def _nonempty_string(
+    value,
+    *,
+    name: str,
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+    ):
+        raise ConfigError(
+            f"{name} must be a "
+            "non-empty string"
+        )
+
+    return value.strip()
+
+
+def load_config(
+    path: Path,
+) -> QConfig:
+    path = path.expanduser()
+
+    try:
+        raw = path.read_bytes()
+
+    except FileNotFoundError:
+        return QConfig()
+
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot read config "
+            f"{path}: {exc}"
+        ) from exc
+
+    try:
+        data = tomllib.loads(
+            raw.decode("utf-8")
+        )
+
+    except (
+        UnicodeDecodeError,
+        tomllib.TOMLDecodeError,
+    ) as exc:
+        raise ConfigError(
+            f"invalid config {path}: "
+            f"{exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ConfigError(
+            "config root must be a table"
+        )
+
+    unknown = (
+        set(data)
+        - _ALLOWED_KEYS
+    )
+
+    if unknown:
+        names = ", ".join(
+            sorted(unknown)
+        )
+
+        raise ConfigError(
+            "unknown config key(s): "
+            f"{names}"
+        )
+
+    model = _nonempty_string(
+        data.get(
+            "model",
+            DEFAULT_MODEL,
+        ),
+        name="model",
+    )
+
+    reasoning_effort = (
+        _nonempty_string(
+            data.get(
+                "reasoning_effort",
+                DEFAULT_REASONING_EFFORT,
+            ),
+            name="reasoning_effort",
+        )
+    )
+
+    tools_raw = _nonempty_string(
+        data.get(
+            "tools",
+            DEFAULT_TOOLS_POLICY.value,
+        ),
+        name="tools",
+    )
+
+    try:
+        tools = ToolsPolicy(
+            tools_raw
+        )
+
+    except ValueError as exc:
+        raise ConfigError(
+            "tools must be "
+            "'enabled' or 'disabled'"
+        ) from exc
+
+    sandbox = _nonempty_string(
+        data.get(
+            "sandbox",
+            DEFAULT_SANDBOX,
+        ),
+        name="sandbox",
+    )
+
+    if sandbox not in _ALLOWED_SANDBOXES:
+        raise ConfigError(
+            "sandbox must be one of: "
+            "read-only, workspace-write, "
+            "danger-full-access"
+        )
+
+    return QConfig(
+        model=model,
+        reasoning_effort=(
+            reasoning_effort
+        ),
+        tools=tools,
+        sandbox=sandbox,
+    )

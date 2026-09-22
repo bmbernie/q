@@ -61,11 +61,18 @@ class QueryEngine:
         state_dir: Path,
         query_id_factory: Callable[[], str]
         | None = None,
+        default_tools_policy: ToolsPolicy = (
+            ToolsPolicy.ENABLED
+        ),
     ):
         self.store = store
         self.broker = broker
         self.state_dir = (
             state_dir.expanduser()
+        )
+
+        self.default_tools_policy = (
+            default_tools_policy
         )
 
         self._query_id_factory = (
@@ -121,7 +128,7 @@ class QueryEngine:
         session_log_path = None
         effective_tools_policy = (
             tools_policy
-            or ToolsPolicy.ENABLED
+            or self.default_tools_policy
         )
 
         if session_name is not None:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .broker import BrokerError
+from .config import QConfig
 from .engine import QueryEngine
 from .ipc import (
     IPCFrame,
@@ -21,10 +22,6 @@ from .models import (
 )
 from .store import QStore
 
-
-DEFAULT_MODEL = "gpt-5.6-luna"
-DEFAULT_REASONING = "xhigh"
-DEFAULT_SANDBOX = "read-only"
 
 _SANDBOXES = {
     "read-only",
@@ -206,9 +203,15 @@ class QDService:
         *,
         store: QStore,
         engine: QueryEngine,
+        config: QConfig | None = None,
     ):
         self.store = store
         self.engine = engine
+        self.config = (
+            config
+            if config is not None
+            else QConfig()
+        )
 
     async def handle(
         self,
@@ -342,7 +345,7 @@ class QDService:
         model = _optional_string(
             params,
             "model",
-            default=DEFAULT_MODEL,
+            default=self.config.model,
         )
 
         reasoning_effort = (
@@ -350,7 +353,7 @@ class QDService:
                 params,
                 "reasoning_effort",
                 default=(
-                    DEFAULT_REASONING
+                    self.config.reasoning_effort
                 ),
             )
         )
@@ -377,7 +380,7 @@ class QDService:
         sandbox = _optional_string(
             params,
             "sandbox",
-            default=DEFAULT_SANDBOX,
+            default=self.config.sandbox,
         )
 
         if sandbox not in _SANDBOXES:

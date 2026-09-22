@@ -74,6 +74,14 @@ def test_resolve_paths_uses_xdg(
         / "q"
     )
 
+    assert paths.config_path == (
+        tmp_path
+        / "home"
+        / ".config"
+        / "q"
+        / "config.toml"
+    )
+
 
 def test_resolve_paths_defaults(
     tmp_path,
@@ -109,6 +117,13 @@ def test_resolve_paths_defaults(
         / ".local"
         / "state"
         / "q"
+    )
+
+    assert paths.config_path == (
+        tmp_path
+        / ".config"
+        / "q"
+        / "config.toml"
     )
 
 
