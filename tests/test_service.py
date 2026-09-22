@@ -1,4 +1,6 @@
 import asyncio
+
+from q import __version__
 import sqlite3
 from pathlib import Path
 
@@ -1433,7 +1435,7 @@ def test_doctor_reports_database_and_broker_health(
             assert result["ok"] is True
 
             assert result["version"] == {
-                "daemon": "0.8.0",
+                "daemon": __version__,
             }
 
             assert (

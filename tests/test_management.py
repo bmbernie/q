@@ -1,6 +1,7 @@
 import asyncio
 import io
 
+from q import __version__
 from q.ipc import IPCFrame
 from q.management import (
     build_parser,
@@ -617,7 +618,7 @@ def test_doctor_healthy():
                 result={
                     "ok": True,
                     "version": {
-                        "daemon": "0.8.0",
+                        "daemon": __version__,
                     },
                     "database": {
                         "ok": True,
@@ -710,7 +711,7 @@ def test_doctor_unhealthy_remote_returns_nonzero():
                 result={
                     "ok": False,
                     "version": {
-                        "daemon": "0.8.0",
+                        "daemon": __version__,
                     },
                     "database": {
                         "ok": True,
@@ -837,7 +838,7 @@ def test_doctor_reports_invalid_local_config():
                 result={
                     "ok": True,
                     "version": {
-                        "daemon": "0.8.0",
+                        "daemon": __version__,
                     },
                     "database": {
                         "ok": True,
@@ -971,7 +972,7 @@ def test_doctor_reports_version_mismatch():
                 result={
                     "ok": True,
                     "version": {
-                        "daemon": "0.7.0",
+                        "daemon": "stale-test-version",
                     },
                     "database": {
                         "ok": True,
@@ -1000,8 +1001,8 @@ def test_doctor_reports_version_mismatch():
 
             assert result["version"] == {
                 "ok": False,
-                "client": "0.8.0",
-                "daemon": "0.7.0",
+                "client": __version__,
+                "daemon": "stale-test-version",
                 "match": False,
             }
 
