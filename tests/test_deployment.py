@@ -55,6 +55,18 @@ def test_install_script_preserves_existing_config():
         in text
     )
     assert (
-        "systemctl --user enable --now qd.service"
+        "systemctl --user enable qd.service"
+        in text
+    )
+    assert (
+        "systemctl --user restart qd.service"
+        in text
+    )
+    assert (
+        '.request("ping")'
+        in text
+    )
+    assert (
+        "qd IPC ready"
         in text
     )

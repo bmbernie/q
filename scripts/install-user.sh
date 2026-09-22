@@ -80,7 +80,55 @@ output_path.chmod(0o600)
 PY
 
 systemctl --user daemon-reload
-systemctl --user enable --now qd.service
+systemctl --user enable qd.service
+systemctl --user restart qd.service
+
+"$VENV/bin/python" - <<'PYREADY'
+import asyncio
+
+from q.ipc import IPCClient
+from q.paths import resolve_paths
+
+
+async def wait_for_qd() -> None:
+    socket_path = resolve_paths().socket_path
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10.0
+    last_error = None
+
+    while loop.time() < deadline:
+        try:
+            result = await asyncio.wait_for(
+                IPCClient(
+                    socket_path
+                ).request("ping"),
+                timeout=1.0,
+            )
+
+            if (
+                isinstance(result, dict)
+                and result.get("ok") is True
+            ):
+                print("qd IPC ready")
+                return
+
+            last_error = RuntimeError(
+                f"unexpected ping result: {result!r}"
+            )
+
+        except Exception as exc:
+            last_error = exc
+
+        await asyncio.sleep(0.1)
+
+    raise SystemExit(
+        "qd did not become IPC-ready "
+        f"within 10 seconds: {last_error}"
+    )
+
+
+asyncio.run(wait_for_qd())
+PYREADY
 
 printf '\n%s\n' '--- installed ---'
 printf 'q:  %s\n' "$LOCAL_BIN/q"
