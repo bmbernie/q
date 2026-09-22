@@ -5,6 +5,7 @@ import errno
 import fcntl
 import os
 import signal
+import sys
 from pathlib import Path
 
 from .broker import HTTPBroker
@@ -220,7 +221,38 @@ async def _main() -> None:
         await broker.aclose()
 
 
-def main() -> None:
+def main(
+    argv: list[str] | None = None,
+) -> None:
+    args = (
+        list(sys.argv[1:])
+        if argv is None
+        else list(argv)
+    )
+
+    # Preserve the existing behavior:
+    #
+    #   qd
+    #
+    # starts the daemon. "qd serve" is an
+    # explicit equivalent for systemd and
+    # manual administration.
+    if args and args[0] != "serve":
+        from .management import (
+            main as management_main,
+        )
+
+        management_main(args)
+        return
+
+    if args == ["serve"]:
+        args = []
+
+    if args:
+        raise SystemExit(
+            "usage: qd [serve|COMMAND]"
+        )
+
     try:
         asyncio.run(
             _main()
