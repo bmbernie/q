@@ -273,6 +273,30 @@ class QDService:
                 )
                 return
 
+            if (
+                request.method
+                == "restart_guard_acquire"
+            ):
+                yield (
+                    self
+                    ._restart_guard_acquire(
+                        request
+                    )
+                )
+                return
+
+            if (
+                request.method
+                == "restart_guard_release"
+            ):
+                yield (
+                    self
+                    ._restart_guard_release(
+                        request
+                    )
+                )
+                return
+
             if request.method == "db_check":
                 yield IPCFrame.result_frame(
                     request.request_id,
@@ -367,6 +391,53 @@ class QDService:
                 code="conflict",
                 message=str(exc),
             )
+
+    def _restart_guard_acquire(
+        self,
+        request: IPCRequest,
+    ) -> IPCFrame:
+        (
+            acquired,
+            running,
+        ) = (
+            self.engine
+            .try_acquire_restart_guard()
+        )
+
+        return IPCFrame.result_frame(
+            request.request_id,
+            {
+                "acquired": acquired,
+                "guarded": (
+                    self.engine
+                    .restart_guarded
+                ),
+                "running_query_ids": [
+                    query.query_id
+                    for query in running
+                ],
+            },
+        )
+
+    def _restart_guard_release(
+        self,
+        request: IPCRequest,
+    ) -> IPCFrame:
+        released = (
+            self.engine
+            .release_restart_guard()
+        )
+
+        return IPCFrame.result_frame(
+            request.request_id,
+            {
+                "released": released,
+                "guarded": (
+                    self.engine
+                    .restart_guarded
+                ),
+            },
+        )
 
     async def _doctor(
         self,

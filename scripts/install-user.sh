@@ -11,8 +11,129 @@ LOCAL_BIN="${HOME}/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/q"
 SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
+RESTART_GUARD_ACQUIRED=0
+
+release_restart_guard() {
+  if [ "$RESTART_GUARD_ACQUIRED" -ne 1 ]; then
+    return
+  fi
+
+  set +e
+
+  "$VENV/bin/python" - <<'PYRELEASE'
+import asyncio
+
+from q.ipc import IPCClient
+from q.paths import resolve_paths
+
+
+async def release() -> None:
+    try:
+        result = await asyncio.wait_for(
+            IPCClient(
+                resolve_paths().socket_path
+            ).request(
+                "restart_guard_release"
+            ),
+            timeout=5.0,
+        )
+
+    except Exception:
+        return
+
+    if (
+        isinstance(result, dict)
+        and result.get("released") is True
+    ):
+        print(
+            "released qd restart guard"
+        )
+
+
+asyncio.run(release())
+PYRELEASE
+}
+
+trap release_restart_guard EXIT
+
 printf '%s\n' '--- q install ---'
 printf 'root: %s\n' "$ROOT"
+
+if systemctl --user is-active --quiet qd.service; then
+  if [ ! -x "$VENV/bin/python" ]; then
+    printf '%s\n' \
+      'cannot safely restart active qd: Python environment is unavailable' \
+      >&2
+    exit 1
+  fi
+
+  "$VENV/bin/python" - <<'PYGUARD'
+import asyncio
+
+from q.ipc import IPCClient
+from q.paths import resolve_paths
+
+
+async def acquire() -> None:
+    try:
+        result = await asyncio.wait_for(
+            IPCClient(
+                resolve_paths().socket_path
+            ).request(
+                "restart_guard_acquire"
+            ),
+            timeout=5.0,
+        )
+
+    except Exception as exc:
+        raise SystemExit(
+            "cannot safely restart active qd: "
+            "restart guard unavailable: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    if not isinstance(result, dict):
+        raise SystemExit(
+            "cannot safely restart active qd: "
+            "invalid restart guard response"
+        )
+
+    running = result.get(
+        "running_query_ids"
+    )
+
+    if result.get("acquired") is not True:
+        if isinstance(running, list):
+            detail = (
+                ", ".join(
+                    str(item)
+                    for item in running
+                )
+                or "unknown"
+            )
+        else:
+            detail = "unknown"
+
+        raise SystemExit(
+            "refusing to restart qd while "
+            "queries are running: "
+            f"{detail}"
+        )
+
+    if result.get("guarded") is not True:
+        raise SystemExit(
+            "cannot safely restart active qd: "
+            "restart guard was not activated"
+        )
+
+    print("qd restart guard acquired")
+
+
+asyncio.run(acquire())
+PYGUARD
+
+  RESTART_GUARD_ACQUIRED=1
+fi
 
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"
@@ -82,6 +203,11 @@ PY
 systemctl --user daemon-reload
 systemctl --user enable qd.service
 systemctl --user restart qd.service
+
+# A successful restart destroys the guarded
+# daemon process. The newly started daemon has
+# no restart guard active.
+RESTART_GUARD_ACQUIRED=0
 
 "$VENV/bin/python" - <<'PYREADY'
 import asyncio

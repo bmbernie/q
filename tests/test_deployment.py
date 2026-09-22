@@ -70,3 +70,31 @@ def test_install_script_preserves_existing_config():
         "qd IPC ready"
         in text
     )
+    assert (
+        '"restart_guard_acquire"'
+        in text
+    )
+    assert (
+        '"restart_guard_release"'
+        in text
+    )
+    assert (
+        "qd restart guard acquired"
+        in text
+    )
+    assert (
+        "RESTART_GUARD_ACQUIRED=1"
+        in text
+    )
+    assert (
+        "trap release_restart_guard EXIT"
+        in text
+    )
+    assert (
+        "refusing to restart qd while "
+        in text
+    )
+    assert (
+        "queries are running: "
+        in text
+    )

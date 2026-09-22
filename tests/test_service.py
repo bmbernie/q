@@ -1542,3 +1542,227 @@ def test_doctor_reports_unhealthy_broker(
             store.close()
 
     asyncio.run(run())
+
+
+def test_restart_guard_refuses_running_query(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        broker.block("guard-running")
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            submitted = await client.request(
+                "submit",
+                {
+                    "input": "guard-running",
+                    "cwd": "/tmp",
+                    "detached": True,
+                },
+            )
+
+            await asyncio.wait_for(
+                broker.started[
+                    "guard-running"
+                ].wait(),
+                timeout=1,
+            )
+
+            result = await client.request(
+                "restart_guard_acquire"
+            )
+
+            assert result == {
+                "acquired": False,
+                "guarded": False,
+                "running_query_ids": [
+                    submitted["query_id"]
+                ],
+            }
+
+            broker.release[
+                "guard-running"
+            ].set()
+
+            final = await engine.wait(
+                submitted["query_id"]
+            )
+
+            assert (
+                final.state
+                == QueryState.COMPLETED
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_restart_guard_rejects_new_submit(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            _broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "restart_guard_acquire"
+            )
+
+            assert result == {
+                "acquired": True,
+                "guarded": True,
+                "running_query_ids": [],
+            }
+
+            with pytest.raises(
+                IPCRemoteError
+            ) as caught:
+                await client.request(
+                    "submit",
+                    {
+                        "input": "blocked",
+                        "cwd": "/tmp",
+                        "detached": True,
+                    },
+                )
+
+            assert (
+                caught.value.code
+                == "conflict"
+            )
+
+            released = await client.request(
+                "restart_guard_release"
+            )
+
+            assert released == {
+                "released": True,
+                "guarded": False,
+            }
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_restart_guard_freezes_queued_boundary(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            _socket,
+        ) = make_stack(tmp_path)
+
+        broker.block("guard-queued")
+
+        await server.start()
+
+        try:
+            query = await engine.submit(
+                input_text="guard-queued",
+                cwd="/tmp",
+                detached=True,
+                stdout_attached=False,
+            )
+
+            acquired, running = (
+                engine
+                .try_acquire_restart_guard()
+            )
+
+            assert acquired is True
+            assert running == []
+
+            # Give the scheduled task an
+            # opportunity to reach _execute().
+            await asyncio.sleep(0)
+
+            current = store.get_query(
+                query.query_id
+            )
+
+            assert current is not None
+            assert (
+                current.state
+                == QueryState.QUEUED
+            )
+            assert (
+                broker.started[
+                    "guard-queued"
+                ].is_set()
+                is False
+            )
+
+            assert (
+                engine.release_restart_guard()
+                is True
+            )
+
+            await asyncio.wait_for(
+                broker.started[
+                    "guard-queued"
+                ].wait(),
+                timeout=1,
+            )
+
+            current = store.get_query(
+                query.query_id
+            )
+
+            assert current is not None
+            assert (
+                current.state
+                == QueryState.RUNNING
+            )
+
+            broker.release[
+                "guard-queued"
+            ].set()
+
+            final = await engine.wait(
+                query.query_id
+            )
+
+            assert (
+                final.state
+                == QueryState.COMPLETED
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())

@@ -219,6 +219,10 @@ class QueryEngine:
 
         self._closing = False
 
+        self._restart_guarded = False
+        self._execution_allowed = asyncio.Event()
+        self._execution_allowed.set()
+
     async def submit(
         self,
         *,
@@ -235,6 +239,12 @@ class QueryEngine:
         if self._closing:
             raise RuntimeError(
                 "query engine is closing"
+            )
+
+        if self._restart_guarded:
+            raise RuntimeError(
+                "query submissions are disabled "
+                "while restart guard is active"
             )
 
         if not input_text:
@@ -364,6 +374,45 @@ class QueryEngine:
         query_id: str,
     ) -> bool:
         return query_id in self._runtimes
+
+    @property
+    def restart_guarded(self) -> bool:
+        return self._restart_guarded
+
+    def try_acquire_restart_guard(
+        self,
+    ) -> tuple[
+        bool,
+        list[QueryRecord],
+    ]:
+        if self._closing:
+            raise RuntimeError(
+                "query engine is closing"
+            )
+
+        if self._restart_guarded:
+            return True, []
+
+        running = self.store.list_queries(
+            state=QueryState.RUNNING
+        )
+
+        if running:
+            return False, running
+
+        self._restart_guarded = True
+        self._execution_allowed.clear()
+
+        return True, []
+
+    def release_restart_guard(self) -> bool:
+        if not self._restart_guarded:
+            return False
+
+        self._restart_guarded = False
+        self._execution_allowed.set()
+
+        return True
 
     def _schedule(
         self,
@@ -761,6 +810,14 @@ class QueryEngine:
         self,
         query_id: str,
     ) -> None:
+        # The restart guard closes the execution
+        # boundary before QUEUED becomes RUNNING.
+        # Event.wait() returns without suspension
+        # when execution is allowed, so the check
+        # and state transition remain atomic on
+        # this event loop.
+        await self._execution_allowed.wait()
+
         query = self.store.get_query(
             query_id
         )
