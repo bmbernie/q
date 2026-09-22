@@ -247,6 +247,34 @@ Cancel a query:
 
     qd cancel QUERY_ID
 
+Check the q state database:
+
+    qd db-check
+
+`qd db-check` runs SQLite `PRAGMA quick_check` through the same `QStore`
+connection used by qd and reports the active durability/concurrency
+settings, including:
+
+- journal mode
+- synchronous mode
+- foreign-key enforcement
+- busy timeout
+- WAL autocheckpoint threshold
+
+A healthy database reports:
+
+    "ok": true
+    "quick_check": [
+      "ok"
+    ]
+
+The command exits with status 0 when the check is healthy and a nonzero
+status when SQLite reports a problem.
+
+q uses SQLite WAL mode with `synchronous = FULL`, foreign-key enforcement,
+and a 5000 ms busy timeout. These settings are applied explicitly when
+the state store opens.
+
 ## Logs
 
 Logging is always enabled.
