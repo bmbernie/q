@@ -97,6 +97,8 @@ Current defaults:
     sandbox = "read-only"
     log_rotate_bytes = 16777216
     log_rotate_archives = 5
+    query_log_retention_days = 30
+    query_log_cleanup_interval_seconds = 3600
 
 `log_rotate_bytes` controls size-based rotation for the global and
 named-session NDJSON logs. The default is 16 MiB.
@@ -107,6 +109,29 @@ The default is 5.
 Set `log_rotate_bytes = 0` to disable size-based rotation.
 
 Per-query logs are not rotated.
+
+Per-query logs are instead governed by retention:
+
+    query_log_retention_days = 30
+    query_log_cleanup_interval_seconds = 3600
+
+`query_log_retention_days` controls how long completed, failed,
+cancelled, and indeterminate query logs are retained. The default is
+30 days.
+
+Set `query_log_retention_days = 0` to disable per-query log cleanup.
+
+`query_log_cleanup_interval_seconds` controls how often qd checks for
+expired per-query logs. The default is 3600 seconds.
+
+Cleanup runs once when qd starts and then periodically while the daemon
+is running.
+
+Only the per-query NDJSON file is removed. The durable SQLite query
+record is preserved, including its state, timestamps, backend IDs, and
+other metadata.
+
+Queued and running query logs are never eligible for retention cleanup.
 
 The daemon reads configuration at startup.
 
@@ -255,7 +280,17 @@ to five archives:
 current log. `qd logs -f` continues following across a rollover.
 
 Per-query logs are kept as individual durable query records and are not
-rotated.
+rotated. By default, terminal-query logs are retained for 30 days and
+then removed by qd's retention cleanup.
+
+Deleting an expired per-query log does not delete the query's SQLite
+metadata. Commands such as `qd status` and `qd queries` continue to
+report the durable query record.
+
+If `qd follow QUERY_ID` is used after that query's per-query log has
+expired, it reports:
+
+    qd: per-query log is not retained
 
 Service diagnostics:
 
