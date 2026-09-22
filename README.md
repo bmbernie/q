@@ -293,6 +293,52 @@ Check the q state database:
 
     qd db-check
 
+Run a complete operational diagnostic:
+
+    qd doctor
+
+`qd doctor` is read-only and emits structured JSON. It checks both the
+local q installation and the running daemon and broker.
+
+The report includes:
+
+- configuration validity and active defaults
+- config file type and permissions
+- SQLite database type and permissions
+- state directory permissions
+- backup directory permissions
+- daemon Unix socket type and mode
+- daemon IPC reachability
+- SQLite `PRAGMA quick_check`
+- database schema version
+- WAL, synchronous, foreign-key, busy-timeout, and autocheckpoint settings
+- chatgpt-worker-broker reachability and `/health` status
+
+A healthy deployment reports:
+
+    "ok": true
+
+and exits with status 0.
+
+If any required diagnostic fails, `qd doctor` still attempts to emit the
+complete report, sets:
+
+    "ok": false
+
+and exits with a nonzero status.
+
+If qd cannot be reached, local configuration, filesystem, and socket
+diagnostics remain available while daemon-side database and broker
+diagnostics are reported as unavailable.
+
+Expected secure filesystem modes are:
+
+    ~/.config/q/config.toml          0600
+    ~/.local/share/q/q.sqlite3       0600
+    ~/.local/state/q/                0700
+    ~/.local/share/q/backups/        0700
+    $XDG_RUNTIME_DIR/q/qd.sock       0600
+
 Create a consistent database backup:
 
     qd db-backup
