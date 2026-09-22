@@ -33,6 +33,7 @@ class FakeBroker:
         cwd,
         model,
         reasoning_effort,
+        backend,
         thread_id,
         tools_policy,
         ephemeral,
@@ -45,6 +46,7 @@ class FakeBroker:
             reasoning_effort=(
                 reasoning_effort
             ),
+            backend=backend,
             thread_id=thread_id,
             tools_policy=tools_policy,
             ephemeral=ephemeral,
@@ -741,6 +743,7 @@ class InteractiveBroker:
         cwd,
         model,
         reasoning_effort,
+        backend,
         thread_id,
         tools_policy,
         ephemeral,

@@ -125,3 +125,92 @@ def test_http_broker_maps_interaction_error():
             await client.aclose()
 
     asyncio.run(run())
+
+
+def test_http_broker_sends_backend_selection():
+    async def run():
+        requests = []
+
+        async def handler(
+            request: httpx.Request,
+        ):
+            requests.append(request)
+
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"type":"thread",'
+                    b'"thread_id":"qb1:web:abc"}\n'
+                    b'{"type":"turn",'
+                    b'"thread_id":"qb1:web:abc",'
+                    b'"turn_id":"qb1:web:def"}\n'
+                    b'{"type":"completed",'
+                    b'"thread_id":"qb1:web:abc",'
+                    b'"turn_id":"qb1:web:def",'
+                    b'"status":"completed"}\n'
+                ),
+                headers={
+                    "content-type": (
+                        "application/x-ndjson"
+                    ),
+                },
+            )
+
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                handler
+            )
+        )
+
+        try:
+            broker = HTTPBroker(
+                "http://broker.test",
+                client=client,
+            )
+
+            events = [
+                event
+                async for event in broker.stream_query(
+                    input_text="hello",
+                    cwd="/tmp",
+                    model="gpt-test",
+                    reasoning_effort="high",
+                    backend="web",
+                    thread_id=None,
+                    tools_policy=None,
+                    ephemeral=True,
+                    sandbox="read-only",
+                )
+            ]
+
+        finally:
+            await client.aclose()
+
+        assert len(requests) == 1
+
+        request = requests[0]
+
+        assert request.method == "POST"
+        assert (
+            request.url.path
+            == "/v1/query"
+        )
+
+        payload = json.loads(
+            request.content
+        )
+
+        assert payload["backend"] == "web"
+        assert payload["input"] == "hello"
+        assert payload["model"] == "gpt-test"
+
+        assert [
+            event["type"]
+            for event in events
+        ] == [
+            "thread",
+            "turn",
+            "completed",
+        ]
+
+    asyncio.run(run())

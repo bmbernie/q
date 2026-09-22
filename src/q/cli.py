@@ -51,7 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-m",
         "--model",
-        help="Codex model override",
+        help="model override",
+    )
+
+    parser.add_argument(
+        "--backend",
+        help="query backend override, e.g. codex or web",
     )
 
     parser.add_argument(
@@ -1098,6 +1103,9 @@ async def run_query(
 
     if args.model is not None:
         params["model"] = args.model
+
+    if args.backend is not None:
+        params["backend"] = args.backend
 
     if args.tools is not None:
         params["tools"] = args.tools

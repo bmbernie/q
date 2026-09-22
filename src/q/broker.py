@@ -57,6 +57,7 @@ class Broker(Protocol):
         cwd: str,
         model: str,
         reasoning_effort: str,
+        backend: str | None,
         thread_id: str | None,
         tools_policy: ToolsPolicy | None,
         ephemeral: bool,
@@ -183,6 +184,7 @@ class HTTPBroker:
         cwd: str,
         model: str,
         reasoning_effort: str,
+        backend: str | None,
         thread_id: str | None,
         tools_policy: ToolsPolicy | None,
         ephemeral: bool,
@@ -193,6 +195,7 @@ class HTTPBroker:
             cwd=cwd,
             model=model,
             reasoning_effort=reasoning_effort,
+            backend=backend,
             thread_id=thread_id,
             tools_policy=tools_policy,
             ephemeral=ephemeral,
@@ -206,6 +209,7 @@ class HTTPBroker:
         cwd: str,
         model: str,
         reasoning_effort: str,
+        backend: str | None,
         thread_id: str | None,
         tools_policy: ToolsPolicy | None,
         ephemeral: bool,
@@ -219,6 +223,9 @@ class HTTPBroker:
             "ephemeral": ephemeral,
             "sandbox": sandbox,
         }
+
+        if backend is not None:
+            payload["backend"] = backend
 
         if thread_id is not None:
             payload["thread_id"] = thread_id

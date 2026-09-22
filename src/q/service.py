@@ -629,6 +629,12 @@ class QDService:
             default=None,
         )
 
+        backend = _optional_string(
+            params,
+            "backend",
+            default=None,
+        )
+
         reasoning_effort = (
             _optional_string(
                 params,
@@ -686,6 +692,7 @@ class QDService:
             cwd=cwd,
             session_name=session_name,
             model=model,
+            backend=backend,
             reasoning_effort=(
                 reasoning_effort
             ),

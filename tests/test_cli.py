@@ -148,6 +148,8 @@ def test_attached_streaming_query(
             "alpha",
             "-r",
             "xhigh",
+            "--backend",
+            "web",
             "--no-tools",
             "hello",
         )
@@ -207,6 +209,10 @@ def test_attached_streaming_query(
         assert (
             params["reasoning_effort"]
             == "xhigh"
+        )
+        assert (
+            params["backend"]
+            == "web"
         )
         assert (
             params["tools"]

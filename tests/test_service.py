@@ -45,6 +45,7 @@ class FakeBroker:
         cwd,
         model,
         reasoning_effort,
+        backend,
         thread_id,
         tools_policy,
         ephemeral,
@@ -57,6 +58,7 @@ class FakeBroker:
             reasoning_effort=(
                 reasoning_effort
             ),
+            backend=backend,
             thread_id=thread_id,
             tools_policy=tools_policy,
             ephemeral=ephemeral,
@@ -984,6 +986,7 @@ def test_config_defaults_apply_to_new_query(
                 {
                     "input": "configured",
                     "cwd": "/tmp",
+                    "backend": "web",
                 },
             )
 
@@ -1002,6 +1005,10 @@ def test_config_defaults_apply_to_new_query(
 
             call = broker.calls[0]
 
+            assert (
+                call["backend"]
+                == "web"
+            )
             assert (
                 call["model"]
                 == "gpt-5.6-sol"

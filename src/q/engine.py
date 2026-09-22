@@ -235,6 +235,7 @@ class QueryEngine:
         cwd: str,
         session_name: str | None = None,
         model: str | None = None,
+        backend: str | None = None,
         reasoning_effort: str | None = None,
         tools_policy: ToolsPolicy | None = None,
         sandbox: str = "read-only",
@@ -357,6 +358,7 @@ class QueryEngine:
                 "input": input_text,
                 "cwd": cwd,
                 "sandbox": sandbox,
+                "backend": backend,
             },
             log_path=log_path,
             session_log_path=(
@@ -1031,6 +1033,9 @@ class QueryEngine:
                     model=query.model,
                     reasoning_effort=(
                         query.reasoning_effort
+                    ),
+                    backend=(
+                        metadata.get("backend")
                     ),
                     thread_id=thread_id,
                     tools_policy=(
