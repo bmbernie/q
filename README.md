@@ -337,11 +337,36 @@ The runtime directory is created with mode 0700.
 Tools are enabled by default unless configuration or an explicit q option
 disables them.
 
-Non-interactive Codex tools are supported.
+Both non-interactive and interactive Codex tool flows are supported.
 
-Current limitation: App Server requests that require interactive client-side
-approval or user input are not yet mediated through q. The broker currently
-rejects those interactive App Server-to-client requests.
+For an attached query, q can mediate App Server requests including:
+
+- command execution approval
+- file-change approval
+- tool user input
+- MCP elicitation
+- additional permission approval
+
+When Codex requests approval, q displays only the decisions offered by that
+specific request.
+
+Example:
+
+    [q interaction] command approval
+      command: ...
+      reason: ...
+      [y] accept once
+      [e] accept with proposed exec-policy amendment
+      [c] cancel
+
+Interaction responses are sent back through qd and the worker broker to the
+pending Codex App Server request.
+
+For detached queries submitted with -q or -qq, qd never auto-approves an
+interactive request. It selects a safe legal negative response: decline when
+available, otherwise cancel.
+
+Interactive requests and responses are recorded in the durable q event logs.
 
 ## Service control
 
@@ -377,4 +402,4 @@ Check whitespace errors:
 
 Current package version:
 
-    0.1.0
+    0.2.0
