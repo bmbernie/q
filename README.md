@@ -342,6 +342,37 @@ q uses SQLite WAL mode with `synchronous = FULL`, foreign-key enforcement,
 and a 5000 ms busy timeout. These settings are applied explicitly when
 the state store opens.
 
+### Database schema migrations
+
+q uses ordered forward migrations for durable SQLite schema changes.
+
+The current schema version is:
+
+    2
+
+Historical schema version 1 databases are upgraded automatically to
+version 2 when q opens them.
+
+Before an automatic migration, q creates a validated backup under:
+
+    ~/.local/share/q/backups/
+
+using a name like:
+
+    pre-migrate-v1-to-v2-YYYYMMDD-HHMMSS-ffffff.sqlite3
+
+The version 1 to version 2 migration preserves existing sessions and
+queries while allowing pending sessions to exist before a backend Codex
+thread ID has been assigned.
+
+Each migration step updates the schema version transactionally and
+validates foreign-key consistency before committing.
+
+Databases whose schema version is newer than the version supported by
+the installed q release are refused without being modified.
+
+Opening an already-current database does not create a migration backup.
+
 ## Logs
 
 Logging is always enabled.
