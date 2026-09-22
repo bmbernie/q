@@ -734,3 +734,87 @@ def test_existing_session_inherits_tools_policy(
             store.close()
 
     asyncio.run(run())
+
+
+
+def test_follow_completed_query_uses_persisted_log(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "persisted-follow",
+                    "cwd": "/tmp",
+                },
+            )
+
+            query_id = result[
+                "query_id"
+            ]
+
+            assert (
+                engine.has_runtime(
+                    query_id
+                )
+                is False
+            )
+
+            frames = []
+
+            async for frame in (
+                client.frames(
+                    "follow",
+                    {
+                        "query_id": (
+                            query_id
+                        ),
+                    },
+                )
+            ):
+                frames.append(frame)
+
+            deltas = [
+                frame.data["delta"]
+                for frame in frames
+                if (
+                    frame.type == "event"
+                    and frame.event
+                    == "delta"
+                )
+            ]
+
+            assert deltas == [
+                "answer:persisted-follow"
+            ]
+
+            assert (
+                frames[-1].type
+                == "result"
+            )
+            assert (
+                frames[-1].result[
+                    "state"
+                ]
+                == "completed"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())

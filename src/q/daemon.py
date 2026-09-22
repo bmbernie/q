@@ -148,6 +148,8 @@ async def serve(
             ),
         )
 
+        await engine.recover()
+
         service = QDService(
             store=store,
             engine=engine,

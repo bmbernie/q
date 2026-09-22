@@ -210,7 +210,27 @@ class QueryEngine:
             ),
         )
 
+        self._schedule(
+            query_id
+        )
+
+        return query
+
+    def has_runtime(
+        self,
+        query_id: str,
+    ) -> bool:
+        return query_id in self._runtimes
+
+    def _schedule(
+        self,
+        query_id: str,
+    ) -> None:
+        if query_id in self._tasks:
+            return
+
         runtime = _Runtime()
+
         self._runtimes[
             query_id
         ] = runtime
@@ -235,7 +255,58 @@ class QueryEngine:
             )
         )
 
-        return query
+    async def recover(self) -> None:
+        # A RUNNING record means qd had already
+        # crossed the local execution boundary.
+        # We cannot prove whether the upstream
+        # turn completed, so never replay it.
+        for query in self.store.list_queries(
+            state=QueryState.RUNNING,
+        ):
+            self.store.transition_query(
+                query.query_id,
+                QueryState.INDETERMINATE,
+                error_type="daemon_restart",
+                error_message=(
+                    "qd restarted while query "
+                    "was running"
+                ),
+            )
+
+            if query.session_name is not None:
+                self.store.mark_session_broken(
+                    query.session_name
+                )
+
+            await self._emit(
+                query.query_id,
+                {
+                    "type": "state",
+                    "state": (
+                        QueryState
+                        .INDETERMINATE
+                        .value
+                    ),
+                    "error_type": (
+                        "daemon_restart"
+                    ),
+                    "error_message": (
+                        "qd restarted while query "
+                        "was running"
+                    ),
+                },
+            )
+
+        # QUEUED means execution never crossed
+        # into RUNNING, so no upstream turn was
+        # started by this query. It is safe to
+        # put back into the scheduler.
+        for query in self.store.list_queries(
+            state=QueryState.QUEUED,
+        ):
+            self._schedule(
+                query.query_id
+            )
 
     async def wait(
         self,
@@ -1039,3 +1110,11 @@ class QueryEngine:
         async with runtime.condition:
             runtime.done = True
             runtime.condition.notify_all()
+
+        # Existing watchers retain their local
+        # reference to runtime. New followers use
+        # the durable NDJSON log instead.
+        self._runtimes.pop(
+            query_id,
+            None,
+        )

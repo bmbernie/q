@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from .broker import BrokerError
@@ -468,27 +470,95 @@ class QDService:
                 query_id
             )
 
-        async for event in (
-            self.engine.watch(
+        used_runtime = False
+
+        if (
+            query.state
+            in {
+                QueryState.QUEUED,
+                QueryState.RUNNING,
+            }
+            and self.engine.has_runtime(
                 query_id
             )
         ):
-            event_name = event.get(
-                "type",
-                "query",
-            )
+            used_runtime = True
 
-            if not isinstance(
-                event_name,
-                str,
+            async for event in (
+                self.engine.watch(
+                    query_id
+                )
             ):
-                event_name = "query"
+                event_name = event.get(
+                    "type",
+                    "query",
+                )
 
-            yield IPCFrame.event_frame(
-                request.request_id,
-                event_name,
-                event,
+                if not isinstance(
+                    event_name,
+                    str,
+                ):
+                    event_name = "query"
+
+                yield IPCFrame.event_frame(
+                    request.request_id,
+                    event_name,
+                    event,
+                )
+
+        if not used_runtime:
+            log_path = Path(
+                query.log_path
             )
+
+            try:
+                stream = log_path.open(
+                    "r",
+                    encoding="utf-8",
+                )
+
+            except FileNotFoundError:
+                stream = None
+
+            if stream is not None:
+                with stream:
+                    for line in stream:
+                        if not line.strip():
+                            continue
+
+                        event = json.loads(
+                            line
+                        )
+
+                        if (
+                            event.get(
+                                "query_id"
+                            )
+                            != query_id
+                        ):
+                            continue
+
+                        event_name = event.get(
+                            "type",
+                            "query",
+                        )
+
+                        if not isinstance(
+                            event_name,
+                            str,
+                        ):
+                            event_name = (
+                                "query"
+                            )
+
+                        yield (
+                            IPCFrame
+                            .event_frame(
+                                request.request_id,
+                                event_name,
+                                event,
+                            )
+                        )
 
         final = self.store.get_query(
             query_id

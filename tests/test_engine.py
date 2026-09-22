@@ -570,3 +570,157 @@ def test_uncertain_stream_breaks_session(
         store.close()
 
     asyncio.run(run())
+
+
+
+def test_recover_resumes_queued_query(
+    tmp_path,
+):
+    async def run():
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        store.create_query(
+            query_id="q-recovered",
+            session_name=None,
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+            prompt_metadata={
+                "input": "recovered",
+                "cwd": "/tmp",
+                "sandbox": "read-only",
+            },
+            log_path=str(
+                tmp_path
+                / "state"
+                / "queries"
+                / "q-recovered.ndjson"
+            ),
+            session_log_path=None,
+            detached=True,
+            stdout_attached=False,
+        )
+
+        await engine.recover()
+
+        done = await engine.wait(
+            "q-recovered"
+        )
+
+        assert (
+            done.state
+            == QueryState.COMPLETED
+        )
+
+        assert [
+            call["input_text"]
+            for call in broker.calls
+        ] == ["recovered"]
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_recover_does_not_replay_running_query(
+    tmp_path,
+):
+    async def run():
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        store.create_session(
+            session_name="uncertain",
+            backend_thread_id=(
+                "thread-existing"
+            ),
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+        )
+
+        store.create_query(
+            query_id="q-running",
+            session_name="uncertain",
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+            prompt_metadata={
+                "input": "do not replay",
+                "cwd": "/tmp",
+                "sandbox": "read-only",
+            },
+            log_path=str(
+                tmp_path
+                / "state"
+                / "queries"
+                / "q-running.ndjson"
+            ),
+            session_log_path=str(
+                tmp_path
+                / "state"
+                / "sessions"
+                / "uncertain.ndjson"
+            ),
+            detached=True,
+            stdout_attached=False,
+        )
+
+        store.transition_query(
+            "q-running",
+            QueryState.RUNNING,
+        )
+
+        store.set_query_backend(
+            "q-running",
+            backend_thread_id=(
+                "thread-existing"
+            ),
+            upstream_turn_id=(
+                "turn-existing"
+            ),
+        )
+
+        await engine.recover()
+
+        query = store.get_query(
+            "q-running"
+        )
+        session = store.get_session(
+            "uncertain"
+        )
+
+        assert query is not None
+        assert session is not None
+
+        assert (
+            query.state
+            == QueryState.INDETERMINATE
+        )
+        assert (
+            query.error_type
+            == "daemon_restart"
+        )
+        assert (
+            session.state
+            == SessionState.BROKEN
+        )
+
+        # Critical invariant: no new broker
+        # submission occurred.
+        assert broker.calls == []
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
