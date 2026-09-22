@@ -41,6 +41,15 @@ class SessionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionBackendBinding:
+    session_name: str
+    backend_name: str
+    conversation_id: str
+    created_at: datetime
+    last_used_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class QueryRecord:
     query_id: str
     session_name: str | None

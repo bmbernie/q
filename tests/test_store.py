@@ -12,6 +12,7 @@ from q.models import (
     ToolsPolicy,
 )
 from q.store import (
+    StateStoreError,
     InvalidQueryTransition,
     QStore,
     QueryAlreadyExists,
@@ -726,9 +727,9 @@ def test_restore_backup_replaces_live_database_and_preserves_rollback(
     assert result["quick_check"] == ["ok"]
     assert (
         result["source_schema_version"]
-        == 2
+        == 3
     )
-    assert result["schema_version"] == 2
+    assert result["schema_version"] == 3
 
     rollback = Path(
         result["rollback_backup"]
@@ -983,7 +984,7 @@ def _create_v1_database(
     db.close()
 
 
-def test_v1_database_migrates_to_v2_without_data_loss(
+def test_v1_database_migrates_to_current_schema_without_data_loss(
     tmp_path,
 ):
     path = tmp_path / "q.sqlite3"
@@ -1000,7 +1001,7 @@ def test_v1_database_migrates_to_v2_without_data_loss(
         """
     ).fetchone()[0]
 
-    assert version == "2"
+    assert version == "3"
 
     legacy = store.get_session(
         "legacy"
@@ -1020,6 +1021,17 @@ def test_v1_database_migrates_to_v2_without_data_loss(
     assert query.session_name == "legacy"
     assert (
         query.backend_thread_id
+        == "thread-legacy"
+    )
+
+    binding = store.get_session_backend(
+        "legacy",
+        "codex",
+    )
+
+    assert binding is not None
+    assert (
+        binding.conversation_id
         == "thread-legacy"
     )
 
@@ -1084,7 +1096,7 @@ def test_v1_database_migrates_to_v2_without_data_loss(
             tmp_path
             / "backups"
         ).glob(
-            "pre-migrate-v1-to-v2-"
+            "pre-migrate-v1-to-v3-"
             "*.sqlite3"
         )
     )
@@ -1119,7 +1131,7 @@ def test_v1_database_migrates_to_v2_without_data_loss(
         backup.close()
 
 
-def test_current_v2_database_does_not_create_migration_backup(
+def test_current_database_does_not_create_migration_backup(
     tmp_path,
 ):
     path = tmp_path / "q.sqlite3"
@@ -1280,14 +1292,14 @@ def test_restore_v1_backup_migrates_to_current_schema(
         result["source_schema_version"]
         == 1
     )
-    assert result["schema_version"] == 2
+    assert result["schema_version"] == 3
     assert result["quick_check"] == ["ok"]
 
     restored = QStore(live_path)
 
     assert (
         restored._schema_version()
-        == 2
+        == 3
     )
 
     assert (
@@ -1351,7 +1363,7 @@ def test_restore_v1_backup_migrates_to_current_schema(
         (
             tmp_path / "backups"
         ).glob(
-            "pre-migrate-v1-to-v2-"
+            "pre-migrate-v1-to-v3-"
             "*.sqlite3"
         )
     )
@@ -1805,3 +1817,149 @@ def test_restore_reports_rollback_failure_and_keeps_diagnostic(
     )
 
     assert len(rollback) == 1
+
+
+def test_session_can_bind_multiple_backends(
+    tmp_path,
+):
+    store = make_store(tmp_path)
+
+    store.create_session(
+        session_name="multi",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    codex = store.bind_session_backend(
+        "multi",
+        "codex",
+        "qb1:codex:abc",
+    )
+
+    web = store.bind_session_backend(
+        "multi",
+        "web",
+        "qb1:web:def",
+    )
+
+    assert codex.backend_name == "codex"
+    assert (
+        codex.conversation_id
+        == "qb1:codex:abc"
+    )
+
+    assert web.backend_name == "web"
+    assert (
+        web.conversation_id
+        == "qb1:web:def"
+    )
+
+    assert [
+        binding.backend_name
+        for binding
+        in store.list_session_backends(
+            "multi"
+        )
+    ] == [
+        "codex",
+        "web",
+    ]
+
+    with pytest.raises(
+        StateStoreError,
+        match="already bound",
+    ):
+        store.bind_session_backend(
+            "multi",
+            "codex",
+            "qb1:codex:other",
+        )
+
+    store.close()
+
+
+def test_v2_database_migrates_legacy_thread_to_codex_binding(
+    tmp_path,
+):
+    path = tmp_path / "q.sqlite3"
+    timestamp = (
+        "2026-09-01T00:00:00+00:00"
+    )
+
+    db = sqlite3.connect(path)
+
+    db.executescript(
+        """
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE sessions (
+            session_name TEXT PRIMARY KEY,
+            backend_thread_id TEXT UNIQUE,
+            model TEXT NOT NULL,
+            reasoning_effort TEXT NOT NULL,
+            tools_policy TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+        """
+    )
+
+    db.execute(
+        """
+        INSERT INTO metadata(key, value)
+        VALUES ('schema_version', '2')
+        """
+    )
+
+    db.execute(
+        """
+        INSERT INTO sessions (
+            session_name,
+            backend_thread_id,
+            model,
+            reasoning_effort,
+            tools_policy,
+            state,
+            created_at,
+            last_used_at,
+            archived_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            "legacy-v2",
+            "qb1:codex:legacy",
+            "gpt-5.6-luna",
+            "xhigh",
+            "enabled",
+            "active",
+            timestamp,
+            timestamp,
+        ),
+    )
+
+    db.commit()
+    db.close()
+
+    store = QStore(path)
+
+    assert store._schema_version() == 3
+
+    binding = store.get_session_backend(
+        "legacy-v2",
+        "codex",
+    )
+
+    assert binding is not None
+    assert (
+        binding.conversation_id
+        == "qb1:codex:legacy"
+    )
+
+    store.close()

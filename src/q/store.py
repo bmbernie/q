@@ -15,6 +15,7 @@ from .backup_retention import (
 from .models import (
     QueryRecord,
     QueryState,
+    SessionBackendBinding,
     SessionRecord,
     SessionState,
     ToolsPolicy,
@@ -22,10 +23,14 @@ from .models import (
 
 
 MIN_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SESSION_NAME = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
+
+_BACKEND_NAME = re.compile(
+    r"^[a-z][a-z0-9_-]{0,63}$"
 )
 
 _TERMINAL_QUERY_STATES = {
@@ -967,6 +972,25 @@ class QStore:
                 archived_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS session_backend_bindings (
+                session_name TEXT NOT NULL
+                    REFERENCES sessions(session_name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE,
+                backend_name TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    session_name,
+                    backend_name
+                ),
+                UNIQUE (
+                    backend_name,
+                    conversation_id
+                )
+            );
+
             CREATE TABLE IF NOT EXISTS queries (
                 query_id TEXT PRIMARY KEY,
                 session_name TEXT
@@ -1198,6 +1222,103 @@ class QStore:
 
         return 2
 
+    def _migrate_2_to_3(
+        self,
+    ) -> int:
+        try:
+            self._db.execute(
+                "BEGIN IMMEDIATE"
+            )
+
+            self._db.execute(
+                """
+                CREATE TABLE session_backend_bindings (
+                    session_name TEXT NOT NULL
+                        REFERENCES sessions(session_name)
+                        ON UPDATE CASCADE
+                        ON DELETE CASCADE,
+                    backend_name TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL,
+                    PRIMARY KEY (
+                        session_name,
+                        backend_name
+                    ),
+                    UNIQUE (
+                        backend_name,
+                        conversation_id
+                    )
+                )
+                """
+            )
+
+            # All v2 session bindings were created
+            # before q supported multiple backends,
+            # so a legacy backend_thread_id is a
+            # Codex conversation binding.
+            self._db.execute(
+                """
+                INSERT INTO session_backend_bindings (
+                    session_name,
+                    backend_name,
+                    conversation_id,
+                    created_at,
+                    last_used_at
+                )
+                SELECT
+                    session_name,
+                    'codex',
+                    backend_thread_id,
+                    created_at,
+                    last_used_at
+                FROM sessions
+                WHERE backend_thread_id IS NOT NULL
+                """
+            )
+
+            cursor = self._db.execute(
+                """
+                UPDATE metadata
+                SET value = ?
+                WHERE key = 'schema_version'
+                """,
+                ("3",),
+            )
+
+            if cursor.rowcount != 1:
+                raise StateStoreError(
+                    "failed to update "
+                    "schema_version during "
+                    "migration 2 -> 3"
+                )
+
+            violations = self._db.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+
+            if violations:
+                raise StateStoreError(
+                    "foreign-key validation "
+                    "failed during migration "
+                    "2 -> 3"
+                )
+
+            self._db.commit()
+
+        except StateStoreError:
+            self._db.rollback()
+            raise
+
+        except sqlite3.Error as exc:
+            self._db.rollback()
+            raise StateStoreError(
+                "database migration "
+                f"2 -> 3 failed: {exc}"
+            ) from exc
+
+        return 3
+
     def _migrate(
         self,
         version: int,
@@ -1208,6 +1329,12 @@ class QStore:
             if current == 1:
                 current = (
                     self._migrate_1_to_2()
+                )
+                continue
+
+            if current == 2:
+                current = (
+                    self._migrate_2_to_3()
                 )
                 continue
 
@@ -1421,6 +1548,135 @@ class QStore:
 
         assert session is not None
         return session
+
+    def bind_session_backend(
+        self,
+        session_name: str,
+        backend_name: str,
+        conversation_id: str,
+    ) -> SessionBackendBinding:
+        if not _BACKEND_NAME.fullmatch(
+            backend_name
+        ):
+            raise ValueError(
+                "invalid backend name"
+            )
+
+        if not conversation_id:
+            raise ValueError(
+                "conversation_id must not be empty"
+            )
+
+        existing = self.get_session_backend(
+            session_name,
+            backend_name,
+        )
+
+        if existing is not None:
+            if (
+                existing.conversation_id
+                != conversation_id
+            ):
+                raise StateStoreError(
+                    "session backend is already "
+                    "bound to another conversation"
+                )
+
+            return existing
+
+        now = _now()
+
+        try:
+            with self._db:
+                self._db.execute(
+                    """
+                    INSERT INTO session_backend_bindings (
+                        session_name,
+                        backend_name,
+                        conversation_id,
+                        created_at,
+                        last_used_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_name,
+                        backend_name,
+                        conversation_id,
+                        _iso(now),
+                        _iso(now),
+                    ),
+                )
+
+        except sqlite3.IntegrityError as exc:
+            if (
+                self.get_session(
+                    session_name
+                )
+                is None
+            ):
+                raise KeyError(
+                    session_name
+                ) from exc
+
+            raise StateStoreError(
+                "backend conversation is already "
+                "bound to another session"
+            ) from exc
+
+        binding = self.get_session_backend(
+            session_name,
+            backend_name,
+        )
+
+        assert binding is not None
+        return binding
+
+    def get_session_backend(
+        self,
+        session_name: str,
+        backend_name: str,
+    ) -> SessionBackendBinding | None:
+        row = self._db.execute(
+            """
+            SELECT *
+            FROM session_backend_bindings
+            WHERE session_name = ?
+              AND backend_name = ?
+            """,
+            (
+                session_name,
+                backend_name,
+            ),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return self._session_backend_binding(
+            row
+        )
+
+    def list_session_backends(
+        self,
+        session_name: str,
+    ) -> list[SessionBackendBinding]:
+        rows = self._db.execute(
+            """
+            SELECT *
+            FROM session_backend_bindings
+            WHERE session_name = ?
+            ORDER BY backend_name
+            """,
+            (session_name,),
+        ).fetchall()
+
+        return [
+            self._session_backend_binding(
+                row
+            )
+            for row in rows
+        ]
 
     def get_session(
         self,
@@ -2002,6 +2258,24 @@ class QStore:
 
         assert updated is not None
         return updated
+
+    @staticmethod
+    def _session_backend_binding(
+        row: sqlite3.Row,
+    ) -> SessionBackendBinding:
+        return SessionBackendBinding(
+            session_name=row["session_name"],
+            backend_name=row["backend_name"],
+            conversation_id=(
+                row["conversation_id"]
+            ),
+            created_at=_dt(
+                row["created_at"]
+            ),
+            last_used_at=_dt(
+                row["last_used_at"]
+            ),
+        )
 
     @staticmethod
     def _session(
