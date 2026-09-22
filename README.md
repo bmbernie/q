@@ -351,13 +351,39 @@ service automatically.
 Before replacing the live database, restore:
 
 - verifies the source with SQLite `PRAGMA quick_check`
-- verifies that the backup schema version matches q
+- validates that the backup schema version is within q's supported range
+- rejects schemas newer than the installed q release
+- rejects schemas older than q's minimum supported migration version
 - creates a consistent backup of the current live database
 - checkpoints committed WAL contents
 - removes stale live `-wal` and `-shm` sidecars
 - atomically replaces the live database
-- sets the restored database to mode `0600`
-- reopens the restored database and runs another quick check
+- reopens the restored database through `QStore`
+- automatically runs any required ordered schema migrations
+- runs another SQLite quick check after migration
+
+A backup does not have to use the current schema version. If its
+schema version is still supported by q's migration chain, restore accepts
+the backup and upgrades it automatically after replacement.
+
+For example, with the current schema version 2, a valid schema version 1
+backup is restored and then migrated through the normal version 1 to
+version 2 migration.
+
+The restore result reports both:
+
+- `source_schema_version`: schema version contained in the backup
+- `schema_version`: final schema version after restore and migration
+
+When restoring an older schema, q may therefore create two distinct
+safety snapshots:
+
+- `pre-restore-*` protects the database that was live before restore
+- `pre-migrate-*` protects the restored historical database before its
+  schema migration
+
+Backups whose schema version is newer than the installed q release are
+rejected before the live database is replaced.
 
 The automatic rollback snapshot is stored under:
 
