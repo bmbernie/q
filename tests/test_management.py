@@ -616,6 +616,9 @@ def test_doctor_healthy():
             client = FakeClient(
                 result={
                     "ok": True,
+                    "version": {
+                        "daemon": "0.8.0",
+                    },
                     "database": {
                         "ok": True,
                         "schema_version": 2,
@@ -706,6 +709,9 @@ def test_doctor_unhealthy_remote_returns_nonzero():
             client = FakeClient(
                 result={
                     "ok": False,
+                    "version": {
+                        "daemon": "0.8.0",
+                    },
                     "database": {
                         "ok": True,
                     },
@@ -830,6 +836,9 @@ def test_doctor_reports_invalid_local_config():
             client = FakeClient(
                 result={
                     "ok": True,
+                    "version": {
+                        "daemon": "0.8.0",
+                    },
                     "database": {
                         "ok": True,
                     },
@@ -942,6 +951,67 @@ def test_doctor_reports_daemon_ipc_timeout(
                     "available"
                 ]
                 is False
+            )
+
+    asyncio.run(run())
+
+
+def test_doctor_reports_version_mismatch():
+    async def run():
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as raw:
+            paths = _doctor_paths(
+                Path(raw)
+            )
+
+            client = FakeClient(
+                result={
+                    "ok": True,
+                    "version": {
+                        "daemon": "0.7.0",
+                    },
+                    "database": {
+                        "ok": True,
+                    },
+                    "broker": {
+                        "ok": True,
+                    },
+                }
+            )
+
+            stdout = io.StringIO()
+
+            status = await run_management(
+                args=parse("doctor"),
+                client=client,
+                stdout=stdout,
+                paths=paths,
+            )
+
+            result = json.loads(
+                stdout.getvalue()
+            )
+
+            assert status == 1
+            assert result["ok"] is False
+
+            assert result["version"] == {
+                "ok": False,
+                "client": "0.8.0",
+                "daemon": "0.7.0",
+                "match": False,
+            }
+
+            assert (
+                result["database"]["ok"]
+                is True
+            )
+            assert (
+                result["broker"]["ok"]
+                is True
             )
 
     asyncio.run(run())

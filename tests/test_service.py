@@ -1432,6 +1432,10 @@ def test_doctor_reports_database_and_broker_health(
 
             assert result["ok"] is True
 
+            assert result["version"] == {
+                "daemon": "0.8.0",
+            }
+
             assert (
                 result["database"]["ok"]
                 is True

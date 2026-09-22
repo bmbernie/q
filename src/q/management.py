@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import TextIO
 
+from . import __version__ as CLIENT_VERSION
 from .doctor import local_doctor
 from .ipc import (
     IPCClient,
@@ -272,10 +273,16 @@ async def run_management(
             broker = remote.get(
                 "broker"
             )
+            remote_version = (
+                remote.get(
+                    "version"
+                )
+            )
 
         else:
             database = None
             broker = None
+            remote_version = None
 
         if not isinstance(
             database,
@@ -303,10 +310,49 @@ async def run_management(
                 ),
             }
 
+        daemon_version = None
+
+        if isinstance(
+            remote_version,
+            dict,
+        ):
+            candidate = (
+                remote_version.get(
+                    "daemon"
+                )
+            )
+
+            if isinstance(
+                candidate,
+                str,
+            ) and candidate:
+                daemon_version = (
+                    candidate
+                )
+
+        version = {
+            "ok": (
+                daemon_version
+                == CLIENT_VERSION
+            ),
+            "client": CLIENT_VERSION,
+            "daemon": daemon_version,
+            "match": (
+                daemon_version
+                == CLIENT_VERSION
+            ),
+        }
+
+        if daemon_version is None:
+            version["error"] = (
+                "daemon version unavailable"
+            )
+
         result = {
             "ok": (
                 local["ok"]
                 and ipc["ok"]
+                and version["ok"]
                 and database.get(
                     "ok"
                 )
@@ -316,6 +362,7 @@ async def run_management(
                 )
                 is True
             ),
+            "version": version,
             "configuration": (
                 local[
                     "configuration"

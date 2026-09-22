@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import __version__ as PACKAGE_VERSION
 from .broker import BrokerError
 from .config import QConfig
 from .engine import QueryEngine
@@ -208,6 +209,7 @@ class QDService:
         store: QStore,
         engine: QueryEngine,
         config: QConfig | None = None,
+        daemon_version: str = PACKAGE_VERSION,
     ):
         self.store = store
         self.engine = engine
@@ -216,6 +218,7 @@ class QDService:
             if config is not None
             else QConfig()
         )
+        self.daemon_version = daemon_version
 
     async def handle(
         self,
@@ -445,6 +448,11 @@ class QDService:
                 database["ok"]
                 and broker["ok"]
             ),
+            "version": {
+                "daemon": (
+                    self.daemon_version
+                ),
+            },
             "database": database,
             "broker": broker,
         }
