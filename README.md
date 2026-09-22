@@ -398,8 +398,38 @@ therefore participate in the configured backup-retention policy. The
 newest pre-restore snapshot is always protected from automatic cleanup.
 
 If validation fails before replacement, the live database is left
-unchanged. The pre-restore snapshot provides an explicit rollback point
-after a successful replacement.
+unchanged.
+
+If restore fails after the backup has already replaced the live database,
+q automatically attempts to recover the previous live state from the
+`pre-restore-*` snapshot.
+
+Before automatic rollback, q preserves the failed restored database under:
+
+    ~/.local/share/q/backups/
+
+using a name like:
+
+    failed-restore-YYYYMMDD-HHMMSS-ffffff.sqlite3
+
+Failed-restore images are diagnostic artifacts. They are not registered
+as managed backups and are not removed by automatic backup retention.
+
+On a successful automatic rollback:
+
+- the previous live database is restored from the `pre-restore-*` snapshot
+- the rollback database is reopened through `QStore`
+- SQLite `PRAGMA quick_check` must succeed
+- the original restore operation still exits with an error
+- the error reports that automatic rollback succeeded
+- the `failed-restore-*` diagnostic image is preserved
+
+If automatic rollback also fails, q reports both the original restore
+failure and the rollback failure. It also reports the diagnostic
+`failed-restore-*` path when preservation succeeded.
+
+The `pre-restore-*` snapshot remains available as an explicit recovery
+point after both successful restores and failed restore attempts.
 
 `qd db-check` runs SQLite `PRAGMA quick_check` through the same `QStore`
 connection used by qd and reports the active durability/concurrency
