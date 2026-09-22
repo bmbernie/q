@@ -1,0 +1,662 @@
+import asyncio
+
+import pytest
+
+from q.engine import QueryEngine
+from q.ipc import (
+    IPCClient,
+    IPCRemoteError,
+    IPCServer,
+)
+from q.models import QueryState
+from q.service import QDService
+from q.store import QStore
+
+
+class FakeBroker:
+    def __init__(self):
+        self.calls = []
+        self.started = {}
+        self.release = {}
+        self.interrupts = []
+        self.interrupted = set()
+
+    def block(self, prompt):
+        self.started[prompt] = (
+            asyncio.Event()
+        )
+        self.release[prompt] = (
+            asyncio.Event()
+        )
+
+    def stream_query(
+        self,
+        *,
+        input_text,
+        cwd,
+        model,
+        reasoning_effort,
+        thread_id,
+        tools_policy,
+        ephemeral,
+        sandbox,
+    ):
+        return self._stream(
+            input_text=input_text,
+            cwd=cwd,
+            model=model,
+            reasoning_effort=(
+                reasoning_effort
+            ),
+            thread_id=thread_id,
+            tools_policy=tools_policy,
+            ephemeral=ephemeral,
+            sandbox=sandbox,
+        )
+
+    async def _stream(
+        self,
+        **kwargs,
+    ):
+        prompt = kwargs[
+            "input_text"
+        ]
+
+        self.calls.append(
+            dict(kwargs)
+        )
+
+        thread_id = (
+            kwargs["thread_id"]
+            or f"thread-{prompt}"
+        )
+        turn_id = f"turn-{prompt}"
+
+        started = self.started.get(
+            prompt
+        )
+
+        if started is not None:
+            started.set()
+
+        yield {
+            "type": "thread",
+            "thread_id": thread_id,
+        }
+
+        yield {
+            "type": "turn",
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+        }
+
+        gate = self.release.get(
+            prompt
+        )
+
+        if gate is not None:
+            await gate.wait()
+
+        if turn_id in self.interrupted:
+            yield {
+                "type": "completed",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "status": (
+                    "interrupted"
+                ),
+                "error": None,
+            }
+            return
+
+        yield {
+            "type": "delta",
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "delta": f"answer:{prompt}",
+        }
+
+        yield {
+            "type": "completed",
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "status": "completed",
+            "error": None,
+        }
+
+    async def interrupt(
+        self,
+        *,
+        thread_id,
+        turn_id,
+    ):
+        self.interrupts.append(
+            (
+                thread_id,
+                turn_id,
+            )
+        )
+
+        self.interrupted.add(
+            turn_id
+        )
+
+        prompt = turn_id.removeprefix(
+            "turn-"
+        )
+
+        gate = self.release.get(
+            prompt
+        )
+
+        if gate is not None:
+            gate.set()
+
+
+def make_stack(tmp_path):
+    store = QStore(
+        tmp_path / "q.sqlite3"
+    )
+    broker = FakeBroker()
+
+    counter = iter(
+        f"q-{number}"
+        for number in range(
+            1,
+            100,
+        )
+    )
+
+    engine = QueryEngine(
+        store=store,
+        broker=broker,
+        state_dir=(
+            tmp_path / "state"
+        ),
+        query_id_factory=(
+            lambda: next(counter)
+        ),
+    )
+
+    service = QDService(
+        store=store,
+        engine=engine,
+    )
+
+    socket = (
+        tmp_path / "qd.sock"
+    )
+
+    server = IPCServer(
+        socket,
+        service.handle,
+    )
+
+    return (
+        store,
+        broker,
+        engine,
+        server,
+        socket,
+    )
+
+
+def test_attached_submit_streams_and_completes(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+            frames = []
+
+            async for frame in (
+                client.frames(
+                    "submit",
+                    {
+                        "input": "hello",
+                        "cwd": "/tmp",
+                    },
+                )
+            ):
+                frames.append(frame)
+
+            assert (
+                frames[-1].type
+                == "result"
+            )
+            assert (
+                frames[-1].result[
+                    "state"
+                ]
+                == "completed"
+            )
+
+            deltas = [
+                frame.data["delta"]
+                for frame in frames
+                if frame.type == "event"
+                and frame.event == "delta"
+            ]
+
+            assert deltas == [
+                "answer:hello"
+            ]
+
+            assert (
+                broker.calls[0][
+                    "model"
+                ]
+                == "gpt-5.6-luna"
+            )
+            assert (
+                broker.calls[0][
+                    "reasoning_effort"
+                ]
+                == "xhigh"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_detached_submit_returns_before_completion(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        broker.block("long")
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "long",
+                    "cwd": "/tmp",
+                    "detached": True,
+                    "stdout_attached": (
+                        False
+                    ),
+                },
+            )
+
+            assert (
+                result["query_id"]
+                == "q-1"
+            )
+            assert (
+                result["detached"]
+                is True
+            )
+
+            await asyncio.wait_for(
+                broker.started[
+                    "long"
+                ].wait(),
+                timeout=1,
+            )
+
+            current = store.get_query(
+                "q-1"
+            )
+
+            assert current is not None
+            assert (
+                current.state
+                == QueryState.RUNNING
+            )
+
+            broker.release[
+                "long"
+            ].set()
+
+            completed = (
+                await engine.wait(
+                    "q-1"
+                )
+            )
+
+            assert (
+                completed.state
+                == QueryState.COMPLETED
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_management_methods(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "remember",
+                    "cwd": "/tmp",
+                    "session_name": (
+                        "alpha"
+                    ),
+                },
+            )
+
+            query_id = result[
+                "query_id"
+            ]
+
+            status = (
+                await client.request(
+                    "status",
+                    {
+                        "query_id": (
+                            query_id
+                        ),
+                    },
+                )
+            )
+
+            assert (
+                status["state"]
+                == "completed"
+            )
+
+            shown = await client.request(
+                "show",
+                {
+                    "query_id": query_id,
+                },
+            )
+
+            assert (
+                shown[
+                    "prompt_metadata"
+                ]["input"]
+                == "remember"
+            )
+
+            queries = (
+                await client.request(
+                    "queries",
+                    {
+                        "session_name": (
+                            "alpha"
+                        ),
+                    },
+                )
+            )
+
+            assert [
+                item["query_id"]
+                for item
+                in queries["queries"]
+            ] == [query_id]
+
+            sessions = (
+                await client.request(
+                    "sessions"
+                )
+            )
+
+            assert (
+                sessions["sessions"][0][
+                    "session_name"
+                ]
+                == "alpha"
+            )
+
+            assert (
+                sessions["sessions"][0][
+                    "backend_thread_id"
+                ]
+                == "thread-remember"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_follow_replays_runtime_events(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "follow-me",
+                    "cwd": "/tmp",
+                },
+            )
+
+            frames = []
+
+            async for frame in (
+                client.frames(
+                    "follow",
+                    {
+                        "query_id": (
+                            result[
+                                "query_id"
+                            ]
+                        ),
+                    },
+                )
+            ):
+                frames.append(frame)
+
+            assert any(
+                frame.type == "event"
+                and frame.event == "delta"
+                and frame.data["delta"]
+                == "answer:follow-me"
+                for frame in frames
+            )
+
+            assert (
+                frames[-1].type
+                == "result"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_cancel_running_query(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        broker.block("cancel")
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            submitted = (
+                await client.request(
+                    "submit",
+                    {
+                        "input": "cancel",
+                        "cwd": "/tmp",
+                        "detached": True,
+                    },
+                )
+            )
+
+            await asyncio.wait_for(
+                broker.started[
+                    "cancel"
+                ].wait(),
+                timeout=1,
+            )
+
+            while True:
+                query = store.get_query(
+                    submitted[
+                        "query_id"
+                    ]
+                )
+
+                assert query is not None
+
+                if (
+                    query.upstream_turn_id
+                    is not None
+                ):
+                    break
+
+                await asyncio.sleep(0)
+
+            cancelled = (
+                await client.request(
+                    "cancel",
+                    {
+                        "query_id": (
+                            submitted[
+                                "query_id"
+                            ]
+                        ),
+                    },
+                )
+            )
+
+            assert (
+                cancelled[
+                    "cancel_requested_at"
+                ]
+                is not None
+            )
+
+            final = await engine.wait(
+                submitted["query_id"]
+            )
+
+            assert (
+                final.state
+                == QueryState.CANCELLED
+            )
+
+            assert broker.interrupts == [
+                (
+                    "thread-cancel",
+                    "turn-cancel",
+                )
+            ]
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_unknown_query_returns_not_found(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            with pytest.raises(
+                IPCRemoteError
+            ) as caught:
+                await client.request(
+                    "status",
+                    {
+                        "query_id": (
+                            "q-missing"
+                        ),
+                    },
+                )
+
+            assert (
+                caught.value.code
+                == "not_found"
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
