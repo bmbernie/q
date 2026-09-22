@@ -7,6 +7,7 @@ import json
 import fcntl
 import os
 import signal
+import socket
 import sys
 from pathlib import Path
 
@@ -35,6 +36,34 @@ from .store import (
 DEFAULT_BROKER_URL = (
     "http://127.0.0.1:8792"
 )
+
+
+def _systemd_notify(
+    message: str,
+) -> None:
+    notify_socket = os.environ.get(
+        "NOTIFY_SOCKET"
+    )
+
+    if not notify_socket:
+        return
+
+    address = (
+        "\0" + notify_socket[1:]
+        if notify_socket.startswith("@")
+        else notify_socket
+    )
+
+    payload = message.encode("utf-8")
+
+    with socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_DGRAM,
+    ) as notifier:
+        notifier.sendto(
+            payload,
+            address,
+        )
 
 
 class DaemonAlreadyRunning(
@@ -349,6 +378,11 @@ async def serve(
         )
 
         await server.start()
+
+        # systemd Type=notify readiness must mean
+        # that q can actually connect to the IPC
+        # socket, not merely that the process exists.
+        _systemd_notify("READY=1")
 
         if ready_event is not None:
             ready_event.set()

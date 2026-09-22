@@ -1,10 +1,12 @@
 import asyncio
+import socket
 
 import pytest
 
 from q.daemon import (
     DaemonAlreadyRunning,
     DaemonLock,
+    _systemd_notify,
     serve,
 )
 from q.ipc import IPCClient
@@ -548,3 +550,34 @@ def test_serve_runs_backup_cleanup(
         )
 
     asyncio.run(run())
+
+
+
+def test_systemd_notify_sends_readiness(
+    tmp_path,
+    monkeypatch,
+):
+    notify_path = (
+        tmp_path / "notify.sock"
+    )
+
+    receiver = socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_DGRAM,
+    )
+
+    try:
+        receiver.bind(str(notify_path))
+        receiver.settimeout(1.0)
+
+        monkeypatch.setenv(
+            "NOTIFY_SOCKET",
+            str(notify_path),
+        )
+
+        _systemd_notify("READY=1")
+
+        assert receiver.recv(64) == b"READY=1"
+
+    finally:
+        receiver.close()
