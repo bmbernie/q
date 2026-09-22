@@ -99,6 +99,9 @@ Current defaults:
     log_rotate_archives = 5
     query_log_retention_days = 30
     query_log_cleanup_interval_seconds = 3600
+    backup_retention_count = 20
+    backup_retention_days = 90
+    backup_cleanup_interval_seconds = 3600
 
 `log_rotate_bytes` controls size-based rotation for the global and
 named-session NDJSON logs. The default is 16 MiB.
@@ -132,6 +135,45 @@ record is preserved, including its state, timestamps, backend IDs, and
 other metadata.
 
 Queued and running query logs are never eligible for retention cleanup.
+
+Managed database backups also have bounded retention:
+
+    backup_retention_count = 20
+    backup_retention_days = 90
+    backup_cleanup_interval_seconds = 3600
+
+`backup_retention_count` targets the maximum number of retained
+q-managed backups after age cleanup. The default is 20. The actual
+retained count can exceed this value when necessary to preserve the
+newest backup in each managed backup class.
+
+`backup_retention_days` removes q-managed backups older than the
+configured age. The default is 90 days.
+
+The count and age limits are independent. Set either value to `0` to
+disable that particular limit. Set both to `0` to disable automatic
+backup cleanup entirely.
+
+When backup retention is enabled, `backup_cleanup_interval_seconds`
+controls how often qd runs cleanup. The default is 3600 seconds. Cleanup
+also runs once when qd starts.
+
+Only backups carrying q's managed-backup provenance marker are eligible
+for automatic deletion. Explicit custom-path backups created with:
+
+    qd db-backup PATH
+
+are not marked as managed and are never removed automatically.
+
+For every managed backup class, q always protects the newest available
+backup. The managed classes are:
+
+- normal q-generated backups
+- pre-restore rollback backups
+- pre-migration rollback backups
+
+Unmarked backup files, including backups created before managed-backup
+retention existed, are ignored by automatic cleanup.
 
 The daemon reads configuration at startup.
 
@@ -281,6 +323,17 @@ Backup files:
 - are created with mode `0600`
 - are never allowed to overwrite an existing destination
 
+A backup created with the default destination is registered as a
+q-managed backup and participates in automatic retention.
+
+A backup created with an explicit destination:
+
+    qd db-backup PATH
+
+is treated as operator-managed. It receives no managed-backup provenance
+marker and is never automatically deleted by q, even if its filename
+resembles a normal q backup.
+
 The command returns structured JSON containing the backup path, size, and
 quick-check result.
 
@@ -313,6 +366,10 @@ The automatic rollback snapshot is stored under:
 with a name like:
 
     pre-restore-YYYYMMDD-HHMMSS-ffffff.sqlite3
+
+Pre-restore snapshots are registered as q-managed rollback backups and
+therefore participate in the configured backup-retention policy. The
+newest pre-restore snapshot is always protected from automatic cleanup.
 
 If validation fails before replacement, the live database is left
 unchanged. The pre-restore snapshot provides an explicit rollback point
@@ -360,6 +417,10 @@ Before an automatic migration, q creates a validated backup under:
 using a name like:
 
     pre-migrate-v1-to-v2-YYYYMMDD-HHMMSS-ffffff.sqlite3
+
+Pre-migration snapshots are registered as q-managed rollback backups and
+participate in the configured backup-retention policy. The newest
+pre-migration snapshot is always protected from automatic cleanup.
 
 The version 1 to version 2 migration preserves existing sessions and
 queries while allowing pending sessions to exist before a backend Codex
