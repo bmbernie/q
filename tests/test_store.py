@@ -724,6 +724,10 @@ def test_restore_backup_replaces_live_database_and_preserves_rollback(
 
     assert result["ok"] is True
     assert result["quick_check"] == ["ok"]
+    assert (
+        result["source_schema_version"]
+        == 2
+    )
     assert result["schema_version"] == 2
 
     rollback = Path(
@@ -753,7 +757,7 @@ def test_restore_backup_replaces_live_database_and_preserves_rollback(
     previous.close()
 
 
-def test_restore_rejects_wrong_schema_version(
+def test_restore_rejects_invalid_schema_version(
     tmp_path,
 ):
     from q.store import StateStoreError
@@ -762,6 +766,15 @@ def test_restore_rejects_wrong_schema_version(
     source_path = tmp_path / "source.sqlite3"
 
     live = QStore(live_path)
+
+    live.create_session(
+        session_name="keep-live",
+        backend_thread_id="thread-keep-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
     live.close()
 
     source = QStore(source_path)
@@ -770,18 +783,36 @@ def test_restore_rejects_wrong_schema_version(
         source._db.execute(
             """
             UPDATE metadata
-            SET value = '999'
+            SET value = 'not-a-version'
             WHERE key = 'schema_version'
             """
         )
 
     source.close()
 
-    with pytest.raises(StateStoreError):
+    with pytest.raises(
+        StateStoreError,
+        match="invalid schema_version",
+    ):
         QStore.restore_backup(
             live_path=live_path,
             backup_path=source_path,
         )
+
+    live = QStore(live_path)
+
+    assert (
+        live.get_session(
+            "keep-live"
+        )
+        is not None
+    )
+
+    live.close()
+
+    assert not (
+        tmp_path / "backups"
+    ).exists()
 
 
 def test_restore_rejects_live_database_as_source(
@@ -1213,3 +1244,242 @@ def test_custom_backup_is_not_marked_managed(
     )
 
     store.close()
+
+
+def test_restore_v1_backup_migrates_to_current_schema(
+    tmp_path,
+):
+    live_path = tmp_path / "q.sqlite3"
+    source_path = (
+        tmp_path / "source-v1.sqlite3"
+    )
+
+    live = QStore(live_path)
+
+    live.create_session(
+        session_name="live-before-restore",
+        backend_thread_id="thread-live-before",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    live.close()
+
+    _create_v1_database(
+        source_path
+    )
+
+    result = QStore.restore_backup(
+        live_path=live_path,
+        backup_path=source_path,
+    )
+
+    assert result["ok"] is True
+    assert (
+        result["source_schema_version"]
+        == 1
+    )
+    assert result["schema_version"] == 2
+    assert result["quick_check"] == ["ok"]
+
+    restored = QStore(live_path)
+
+    assert (
+        restored._schema_version()
+        == 2
+    )
+
+    assert (
+        restored.get_session(
+            "legacy"
+        )
+        is not None
+    )
+
+    assert (
+        restored.get_query(
+            "q-legacy"
+        )
+        is not None
+    )
+
+    assert (
+        restored.get_session(
+            "live-before-restore"
+        )
+        is None
+    )
+
+    # Prove the v1 -> v2 change actually
+    # occurred: backend_thread_id is now
+    # nullable for pending sessions.
+    columns = {
+        row["name"]: row
+        for row in restored._db.execute(
+            "PRAGMA table_info(sessions)"
+        ).fetchall()
+    }
+
+    assert (
+        columns[
+            "backend_thread_id"
+        ]["notnull"]
+        == 0
+    )
+
+    restored.close()
+
+    rollback = Path(
+        result["rollback_backup"]
+    )
+
+    assert rollback.exists()
+
+    previous = QStore(rollback)
+
+    assert (
+        previous.get_session(
+            "live-before-restore"
+        )
+        is not None
+    )
+
+    previous.close()
+
+    migration_backups = list(
+        (
+            tmp_path / "backups"
+        ).glob(
+            "pre-migrate-v1-to-v2-"
+            "*.sqlite3"
+        )
+    )
+
+    assert len(migration_backups) == 1
+
+
+def test_restore_rejects_schema_older_than_supported_without_replacing_live(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = (
+        tmp_path / "source-old.sqlite3"
+    )
+
+    live = QStore(live_path)
+
+    live.create_session(
+        session_name="keep-live",
+        backend_thread_id="thread-keep-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    live.close()
+
+    source = QStore(source_path)
+
+    with source._db:
+        source._db.execute(
+            """
+            UPDATE metadata
+            SET value = '0'
+            WHERE key = 'schema_version'
+            """
+        )
+
+    source.close()
+
+    with pytest.raises(
+        StateStoreError,
+        match=(
+            "older than minimum "
+            "supported version"
+        ),
+    ):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+    live = QStore(live_path)
+
+    assert (
+        live.get_session(
+            "keep-live"
+        )
+        is not None
+    )
+
+    live.close()
+
+    assert not (
+        tmp_path / "backups"
+    ).exists()
+
+
+def test_restore_rejects_newer_schema_without_replacing_live(
+    tmp_path,
+):
+    from q.store import StateStoreError
+
+    live_path = tmp_path / "q.sqlite3"
+    source_path = (
+        tmp_path / "source-new.sqlite3"
+    )
+
+    live = QStore(live_path)
+
+    live.create_session(
+        session_name="keep-live",
+        backend_thread_id="thread-keep-live",
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        tools_policy=ToolsPolicy.ENABLED,
+    )
+
+    live.close()
+
+    source = QStore(source_path)
+
+    with source._db:
+        source._db.execute(
+            """
+            UPDATE metadata
+            SET value = '999'
+            WHERE key = 'schema_version'
+            """
+        )
+
+    source.close()
+
+    with pytest.raises(
+        StateStoreError,
+        match=(
+            "newer than supported "
+            "version"
+        ),
+    ):
+        QStore.restore_backup(
+            live_path=live_path,
+            backup_path=source_path,
+        )
+
+    live = QStore(live_path)
+
+    assert (
+        live.get_session(
+            "keep-live"
+        )
+        is not None
+    )
+
+    live.close()
+
+    assert not (
+        tmp_path / "backups"
+    ).exists()

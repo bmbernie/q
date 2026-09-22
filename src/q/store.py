@@ -411,12 +411,24 @@ class QStore:
 
             if (
                 schema_version
-                != SCHEMA_VERSION
+                < MIN_SCHEMA_VERSION
             ):
                 raise StateStoreError(
                     "snapshot schema version "
-                    f"{schema_version} does not "
-                    "match required version "
+                    f"{schema_version} is older "
+                    "than minimum supported "
+                    "version "
+                    f"{MIN_SCHEMA_VERSION}"
+                )
+
+            if (
+                schema_version
+                > SCHEMA_VERSION
+            ):
+                raise StateStoreError(
+                    "snapshot schema version "
+                    f"{schema_version} is newer "
+                    "than supported version "
                     f"{SCHEMA_VERSION}"
                 )
 
@@ -597,6 +609,9 @@ class QStore:
                 health = (
                     restored.quick_check()
                 )
+                restored_schema_version = (
+                    restored._schema_version()
+                )
 
             finally:
                 restored.close()
@@ -619,10 +634,13 @@ class QStore:
                     is not None
                     else None
                 ),
-                "schema_version": (
+                "source_schema_version": (
                     source_info[
                         "schema_version"
                     ]
+                ),
+                "schema_version": (
+                    restored_schema_version
                 ),
                 "quick_check": (
                     health["quick_check"]
