@@ -207,6 +207,7 @@ async def run_management(
     if command == "follow":
         last_delta = ""
         wrote = False
+        notice = None
 
         async for frame in client.frames(
             "follow",
@@ -229,6 +230,20 @@ async def run_management(
                     last_delta = delta
                     wrote = True
 
+            elif (
+                frame.type == "event"
+                and frame.event == "notice"
+            ):
+                message = frame.data.get(
+                    "message"
+                )
+
+                if isinstance(
+                    message,
+                    str,
+                ):
+                    notice = message
+
         if (
             wrote
             and not last_delta.endswith(
@@ -236,6 +251,15 @@ async def run_management(
             )
         ):
             stdout.write("\n")
+            stdout.flush()
+
+        elif (
+            not wrote
+            and notice is not None
+        ):
+            stdout.write(
+                f"qd: {notice}\n"
+            )
             stdout.flush()
 
         return 0

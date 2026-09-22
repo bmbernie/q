@@ -485,6 +485,7 @@ class QDService:
             )
 
         used_runtime = False
+        log_retained: bool | None = None
 
         if (
             query.state
@@ -533,6 +534,36 @@ class QDService:
 
             except FileNotFoundError:
                 stream = None
+                log_retained = False
+
+                if query.state not in {
+                    QueryState.QUEUED,
+                    QueryState.RUNNING,
+                }:
+                    yield (
+                        IPCFrame.event_frame(
+                            request.request_id,
+                            "notice",
+                            {
+                                "type": (
+                                    "log_retention"
+                                ),
+                                "query_id": (
+                                    query_id
+                                ),
+                                "log_retained": (
+                                    False
+                                ),
+                                "message": (
+                                    "per-query log "
+                                    "is not retained"
+                                ),
+                            },
+                        )
+                    )
+
+            else:
+                log_retained = True
 
             if stream is not None:
                 with stream:
@@ -583,9 +614,16 @@ class QDService:
                 query_id
             )
 
+        result = query_dict(final)
+
+        if not used_runtime:
+            result["log_retained"] = (
+                bool(log_retained)
+            )
+
         yield IPCFrame.result_frame(
             request.request_id,
-            query_dict(final),
+            result,
         )
 
     async def _logs(

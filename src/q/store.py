@@ -166,6 +166,10 @@ class QStore:
             CREATE INDEX IF NOT EXISTS
                 queries_session_created_idx
             ON queries(session_name, created_at);
+
+            CREATE INDEX IF NOT EXISTS
+                queries_completed_at_idx
+            ON queries(completed_at);
             """
         )
 
@@ -686,6 +690,37 @@ class QStore:
             ORDER BY created_at, query_id
             """,
             values,
+        ).fetchall()
+
+        return [
+            self._query(row)
+            for row in rows
+        ]
+
+    def list_queries_completed_before(
+        self,
+        cutoff: datetime,
+    ) -> list[QueryRecord]:
+        terminal_states = (
+            QueryState.COMPLETED.value,
+            QueryState.FAILED.value,
+            QueryState.INDETERMINATE.value,
+            QueryState.CANCELLED.value,
+        )
+
+        rows = self._db.execute(
+            """
+            SELECT *
+            FROM queries
+            WHERE completed_at IS NOT NULL
+              AND completed_at < ?
+              AND state IN (?, ?, ?, ?)
+            ORDER BY completed_at, query_id
+            """,
+            (
+                _iso(cutoff),
+                *terminal_states,
+            ),
         ).fetchall()
 
         return [

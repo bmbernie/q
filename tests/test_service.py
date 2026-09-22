@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -1179,5 +1180,110 @@ def test_respond_interaction_ipc_method():
                 },
             )
         ]
+
+    asyncio.run(run())
+
+
+
+def test_follow_reports_unretained_log(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "expire-me",
+                    "cwd": "/tmp",
+                },
+            )
+
+            query_id = result[
+                "query_id"
+            ]
+
+            query = store.get_query(
+                query_id
+            )
+
+            assert query is not None
+
+            Path(
+                query.log_path
+            ).unlink()
+
+            frames = []
+
+            async for frame in (
+                client.frames(
+                    "follow",
+                    {
+                        "query_id": (
+                            query_id
+                        ),
+                    },
+                )
+            ):
+                frames.append(frame)
+
+            notices = [
+                frame
+                for frame in frames
+                if (
+                    frame.type == "event"
+                    and
+                    frame.event == "notice"
+                )
+            ]
+
+            assert len(notices) == 1
+            assert (
+                notices[0]
+                .data["log_retained"]
+                is False
+            )
+            assert (
+                notices[0]
+                .data["message"]
+                == (
+                    "per-query log "
+                    "is not retained"
+                )
+            )
+
+            assert (
+                frames[-1].type
+                == "result"
+            )
+            assert (
+                frames[-1]
+                .result["log_retained"]
+                is False
+            )
+
+            # Metadata remains available.
+            assert (
+                store.get_query(
+                    query_id
+                )
+                is not None
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
 
     asyncio.run(run())

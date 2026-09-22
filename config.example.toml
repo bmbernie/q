@@ -5,3 +5,6 @@ sandbox = "read-only"
 
 log_rotate_bytes = 16777216
 log_rotate_archives = 5
+
+query_log_retention_days = 30
+query_log_cleanup_interval_seconds = 3600

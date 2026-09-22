@@ -20,6 +20,7 @@ from .paths import (
     resolve_paths,
 )
 from .service import QDService
+from .retention import cleanup_query_logs
 from .store import QStore
 
 
@@ -121,6 +122,34 @@ class DaemonLock:
             os.close(fd)
 
 
+async def _query_log_cleanup_loop(
+    *,
+    store: QStore,
+    state_dir,
+    retention_days: int,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+) -> None:
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=interval_seconds,
+            )
+
+        except TimeoutError:
+            cleanup_query_logs(
+                store=store,
+                state_dir=state_dir,
+                retention_days=(
+                    retention_days
+                ),
+            )
+
+        else:
+            return
+
+
 async def serve(
     *,
     paths: QPaths,
@@ -138,6 +167,9 @@ async def serve(
     store: QStore | None = None
     engine: QueryEngine | None = None
     server: IPCServer | None = None
+    cleanup_task: (
+        asyncio.Task[None] | None
+    ) = None
 
     try:
         config = load_config(
@@ -173,6 +205,44 @@ async def serve(
 
         await engine.recover()
 
+        if (
+            config.query_log_retention_days
+            > 0
+        ):
+            cleanup_query_logs(
+                store=store,
+                state_dir=paths.state_dir,
+                retention_days=(
+                    config
+                    .query_log_retention_days
+                ),
+            )
+
+            cleanup_task = (
+                asyncio.create_task(
+                    _query_log_cleanup_loop(
+                        store=store,
+                        state_dir=(
+                            paths.state_dir
+                        ),
+                        retention_days=(
+                            config
+                            .query_log_retention_days
+                        ),
+                        interval_seconds=(
+                            config
+                            .query_log_cleanup_interval_seconds
+                        ),
+                        stop_event=(
+                            stop_event
+                        ),
+                    ),
+                    name=(
+                        "q:query-log-cleanup"
+                    ),
+                )
+            )
+
         service = QDService(
             store=store,
             engine=engine,
@@ -194,6 +264,15 @@ async def serve(
     finally:
         if server is not None:
             await server.aclose()
+
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+
+            try:
+                await cleanup_task
+
+            except asyncio.CancelledError:
+                pass
 
         if engine is not None:
             await engine.aclose()

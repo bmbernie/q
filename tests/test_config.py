@@ -161,3 +161,48 @@ log_rotate_archives = 0
         ConfigError
     ):
         load_config(path)
+
+
+def test_query_log_retention_config(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+query_log_retention_days = 14
+query_log_cleanup_interval_seconds = 900
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert (
+        config.query_log_retention_days
+        == 14
+    )
+    assert (
+        config
+        .query_log_cleanup_interval_seconds
+        == 900
+    )
+
+
+def test_retention_requires_positive_interval(
+    tmp_path,
+):
+    path = tmp_path / "config.toml"
+
+    path.write_text(
+        """
+query_log_retention_days = 30
+query_log_cleanup_interval_seconds = 0
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError
+    ):
+        load_config(path)

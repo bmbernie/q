@@ -225,3 +225,103 @@ def test_serve_exposes_ping(
         )
 
     asyncio.run(run())
+
+
+
+def test_serve_runs_query_log_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        paths = resolve_paths(
+            environ={
+                "HOME": str(tmp_path),
+                "XDG_RUNTIME_DIR": (
+                    str(
+                        tmp_path
+                        / "runtime"
+                    )
+                ),
+                "XDG_DATA_HOME": (
+                    str(
+                        tmp_path
+                        / "data"
+                    )
+                ),
+                "XDG_STATE_HOME": (
+                    str(
+                        tmp_path
+                        / "state"
+                    )
+                ),
+            }
+        )
+
+        paths.config_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        paths.config_path.write_text(
+            (
+                "query_log_retention_days"
+                " = 30\n"
+                "query_log_cleanup_interval_seconds"
+                " = 3600\n"
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+
+        def fake_cleanup(
+            *,
+            store,
+            state_dir,
+            retention_days,
+            now=None,
+        ):
+            calls.append(
+                (
+                    state_dir,
+                    retention_days,
+                )
+            )
+
+        monkeypatch.setattr(
+            "q.daemon.cleanup_query_logs",
+            fake_cleanup,
+        )
+
+        stop_event = asyncio.Event()
+        ready_event = asyncio.Event()
+
+        task = asyncio.create_task(
+            serve(
+                paths=paths,
+                broker=UnusedBroker(),
+                stop_event=stop_event,
+                ready_event=ready_event,
+            )
+        )
+
+        await asyncio.wait_for(
+            ready_event.wait(),
+            timeout=1,
+        )
+
+        assert calls == [
+            (
+                paths.state_dir,
+                30,
+            )
+        ]
+
+        stop_event.set()
+
+        await asyncio.wait_for(
+            task,
+            timeout=1,
+        )
+
+    asyncio.run(run())

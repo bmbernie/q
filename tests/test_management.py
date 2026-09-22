@@ -310,3 +310,54 @@ def test_logs_prints_raw_ndjson_lines():
         ]
 
     asyncio.run(run())
+
+
+
+def test_follow_reports_unretained_log():
+    async def run():
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "notice",
+                    {
+                        "type": (
+                            "log_retention"
+                        ),
+                        "query_id": "q-old",
+                        "log_retained": False,
+                        "message": (
+                            "per-query log "
+                            "is not retained"
+                        ),
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "query_id": "q-old",
+                        "state": "completed",
+                        "log_retained": False,
+                    },
+                ),
+            ]
+        )
+
+        stdout = io.StringIO()
+
+        status = await run_management(
+            args=parse(
+                "follow",
+                "q-old",
+            ),
+            client=client,
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert stdout.getvalue() == (
+            "qd: per-query log "
+            "is not retained\n"
+        )
+
+    asyncio.run(run())

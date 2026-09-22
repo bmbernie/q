@@ -15,6 +15,8 @@ DEFAULT_LOG_ROTATE_BYTES = (
     16 * 1024 * 1024
 )
 DEFAULT_LOG_ROTATE_ARCHIVES = 5
+DEFAULT_QUERY_LOG_RETENTION_DAYS = 30
+DEFAULT_QUERY_LOG_CLEANUP_INTERVAL_SECONDS = 3600
 
 _ALLOWED_KEYS = {
     "model",
@@ -23,6 +25,8 @@ _ALLOWED_KEYS = {
     "sandbox",
     "log_rotate_bytes",
     "log_rotate_archives",
+    "query_log_retention_days",
+    "query_log_cleanup_interval_seconds",
 }
 
 _ALLOWED_SANDBOXES = {
@@ -51,6 +55,12 @@ class QConfig:
     )
     log_rotate_archives: int = (
         DEFAULT_LOG_ROTATE_ARCHIVES
+    )
+    query_log_retention_days: int = (
+        DEFAULT_QUERY_LOG_RETENTION_DAYS
+    )
+    query_log_cleanup_interval_seconds: int = (
+        DEFAULT_QUERY_LOG_CLEANUP_INTERVAL_SECONDS
     )
 
 
@@ -222,6 +232,40 @@ def load_config(
             "is enabled"
         )
 
+    query_log_retention_days = (
+        _nonnegative_int(
+            data.get(
+                "query_log_retention_days",
+                DEFAULT_QUERY_LOG_RETENTION_DAYS,
+            ),
+            name="query_log_retention_days",
+        )
+    )
+
+    query_log_cleanup_interval_seconds = (
+        _nonnegative_int(
+            data.get(
+                "query_log_cleanup_interval_seconds",
+                DEFAULT_QUERY_LOG_CLEANUP_INTERVAL_SECONDS,
+            ),
+            name=(
+                "query_log_cleanup_interval_seconds"
+            ),
+        )
+    )
+
+    if (
+        query_log_retention_days > 0
+        and
+        query_log_cleanup_interval_seconds
+        == 0
+    ):
+        raise ConfigError(
+            "query_log_cleanup_interval_seconds "
+            "must be at least 1 when query log "
+            "retention is enabled"
+        )
+
     return QConfig(
         model=model,
         reasoning_effort=(
@@ -234,5 +278,11 @@ def load_config(
         ),
         log_rotate_archives=(
             log_rotate_archives
+        ),
+        query_log_retention_days=(
+            query_log_retention_days
+        ),
+        query_log_cleanup_interval_seconds=(
+            query_log_cleanup_interval_seconds
         ),
     )
