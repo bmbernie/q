@@ -1386,28 +1386,41 @@ class QueryEngine:
             + "\n"
         )
 
-        for raw_path in (
-            str(
-                self.state_dir
-                / "q.ndjson"
+        append_log_line(
+            self.state_dir
+            / "q.ndjson",
+            encoded,
+            rotate_bytes=(
+                self.log_rotate_bytes
             ),
-            query.log_path,
-            query.session_log_path,
+            archives=(
+                self.log_rotate_archives
+            ),
+        )
+
+        # Per-query logs are durable records for
+        # one query and are never rotated.
+        append_log_line(
+            Path(query.log_path),
+            encoded,
+        )
+
+        if (
+            query.session_log_path
+            is not None
         ):
-            if raw_path is None:
-                continue
-
-            path = Path(raw_path)
-            path.parent.mkdir(
-                parents=True,
-                exist_ok=True,
+            append_log_line(
+                Path(
+                    query.session_log_path
+                ),
+                encoded,
+                rotate_bytes=(
+                    self.log_rotate_bytes
+                ),
+                archives=(
+                    self.log_rotate_archives
+                ),
             )
-
-            with path.open(
-                "a",
-                encoding="utf-8",
-            ) as stream:
-                stream.write(encoded)
 
         self.store.mark_stream_activity(
             query_id

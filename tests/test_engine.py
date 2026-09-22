@@ -968,3 +968,157 @@ def test_detached_approval_uses_cancel_when_decline_unavailable():
     assert result == {
         "decision": "cancel",
     }
+
+
+def test_emit_rotates_global_and_session_logs_only(
+    tmp_path,
+):
+    async def run():
+        store = QStore(
+            tmp_path / "q.sqlite3"
+        )
+        broker = FakeBroker()
+
+        state_dir = (
+            tmp_path / "state"
+        )
+        query_dir = (
+            state_dir / "queries"
+        )
+        session_dir = (
+            state_dir / "sessions"
+        )
+
+        query_dir.mkdir(
+            parents=True
+        )
+        session_dir.mkdir(
+            parents=True
+        )
+
+        global_log = (
+            state_dir / "q.ndjson"
+        )
+        session_log = (
+            session_dir
+            / "rotate.ndjson"
+        )
+        query_log = (
+            query_dir
+            / "q-rotate.ndjson"
+        )
+
+        global_log.write_text(
+            "G" * 30,
+            encoding="utf-8",
+        )
+        session_log.write_text(
+            "S" * 30,
+            encoding="utf-8",
+        )
+        query_log.write_text(
+            "Q" * 30,
+            encoding="utf-8",
+        )
+
+        store.create_session(
+            session_name="rotate",
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+        )
+
+        store.create_query(
+            query_id="q-rotate",
+            session_name="rotate",
+            model="gpt-5.6-luna",
+            reasoning_effort="xhigh",
+            tools_policy=(
+                ToolsPolicy.ENABLED
+            ),
+            prompt_metadata={
+                "input": "rotation test",
+                "cwd": "/tmp",
+                "sandbox": "read-only",
+            },
+            log_path=str(
+                query_log
+            ),
+            session_log_path=str(
+                session_log
+            ),
+            detached=False,
+            stdout_attached=True,
+        )
+
+        engine = QueryEngine(
+            store=store,
+            broker=broker,
+            state_dir=state_dir,
+            log_rotate_bytes=32,
+            log_rotate_archives=2,
+        )
+
+        await engine._emit(
+            "q-rotate",
+            {
+                "type": "probe",
+                "value": "rotation",
+            },
+        )
+
+        assert (
+            state_dir
+            / "q.ndjson.1"
+        ).read_text(
+            encoding="utf-8"
+        ) == "G" * 30
+
+        assert (
+            session_dir
+            / "rotate.ndjson.1"
+        ).read_text(
+            encoding="utf-8"
+        ) == "S" * 30
+
+        assert not (
+            query_dir
+            / "q-rotate.ndjson.1"
+        ).exists()
+
+        global_current = (
+            global_log.read_text(
+                encoding="utf-8"
+            )
+        )
+        session_current = (
+            session_log.read_text(
+                encoding="utf-8"
+            )
+        )
+        query_current = (
+            query_log.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        assert '"type":"probe"' in (
+            global_current
+        )
+        assert '"type":"probe"' in (
+            session_current
+        )
+
+        assert query_current.startswith(
+            "Q" * 30
+        )
+        assert '"type":"probe"' in (
+            query_current
+        )
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())
