@@ -35,6 +35,27 @@ terminal and owns query lifecycle and persistence.
 - Codex App Server configured by the broker
 - ChatGPT/Codex authentication already established
 
+### Broker compatibility
+
+q/qd v0.2.0 requires the worker-broker capabilities present in:
+
+    q-v0.2.0-backend
+
+That broker tag resolves to:
+
+    919f89d56e16d816335a4227662dd4140e2b32ce
+
+Required broker capabilities include:
+
+- streamed Codex query transport
+- persistent Codex thread resume
+- Codex turn interruption
+- App Server interactive-request relay
+- interactive approval policy routing to the user
+
+An older broker, including the original q/qd v0.1.0 backend state, is not
+sufficient for the full v0.2.0 feature set.
+
 The default broker endpoint is:
 
 ```text
