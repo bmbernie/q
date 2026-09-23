@@ -70,8 +70,8 @@ The `version` section compares the package version loaded by the `qd`
 client process with the package version loaded by the running daemon:
 
     "version": {
-      "client": "0.8.0",
-      "daemon": "0.8.0",
+      "client": "0.10.0",
+      "daemon": "0.10.0",
       "match": true,
       "ok": true
     }
@@ -147,6 +147,8 @@ WAL mode.
 
 Before publishing the snapshot, q verifies it with SQLite
 `PRAGMA quick_check`.
+
+`qd db-backup` backs up the SQLite state database only. Managed attachment files under `~/.local/share/q/attachments/` are not included and must be backed up separately when needed.
 
 Backup files:
 

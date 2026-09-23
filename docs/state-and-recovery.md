@@ -29,36 +29,31 @@ Queries use these durable states:
     indeterminate
     cancelled
 
-Typical lifecycle:
+Allowed lifecycle:
 
-    queued
-      |
-      v
-    running
-      |
-      +-- completed
-      +-- failed
-      +-- cancelled
-      +-- indeterminate
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running
+    queued --> failed
+    queued --> cancelled
+    running --> completed
+    running --> failed
+    running --> cancelled
+    running --> indeterminate
+```
 
 Terminal states are not silently replayed.
 
 ## Named sessions
 
-A q session name maps to an opaque Codex thread ID.
+A q session name can hold one persistent broker conversation binding per provider.
 
-A newly accepted session initially has:
+A new named session starts without provider bindings. The first successful persistent query to a provider establishes that provider's binding.
 
-    state = pending
-    backend_thread_id = NULL
+If exactly one provider binding exists and a later query does not select a provider, qd reuses that binding. If multiple provider bindings exist, the query must select a provider.
 
-After Codex creates the thread:
-
-    state = active
-    backend_thread_id = 01a0...
-
-The binding is one-time. An active session cannot silently switch to another
-backend thread.
+A provider binding is stable: qd does not silently replace an existing provider conversation with a different one.
 
 Queries for the same named session are serialized.
 
@@ -95,9 +90,8 @@ If that query belonged to a named session, the session is marked:
 
 ## Cancellation
 
-qd cancel QUERY_ID records the cancellation request and interrupts the active
-Codex turn through the broker when thread and turn IDs are available.
+`qd cancel QUERY_ID` records the cancellation request and asks the broker to interrupt the active provider operation when conversation and execution IDs are available.
 
-Successful interruption transitions the query to:
+When the selected provider supports interruption and the interrupt succeeds, the query transitions to:
 
     cancelled

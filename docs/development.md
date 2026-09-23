@@ -10,4 +10,4 @@ Check whitespace errors:
 
 Current package version:
 
-    0.2.0
+    0.10.0

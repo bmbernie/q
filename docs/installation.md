@@ -13,14 +13,13 @@ q/qd requires a compatible `chatgpt-query-broker` deployment.
 
 Required broker capabilities include:
 
-- streamed Codex query transport
-- persistent Codex thread resume
-- Codex turn interruption
-- App Server interactive-request relay
-- interactive approval policy routing to the user
+- streamed query transport
+- persistent conversation resume
+- turn interruption for supported providers
+- interactive-request relay for supported providers
+- interactive approval routing to the user
 
-An older broker, including the original q/qd v0.1.0 backend state, is not
-sufficient for the full v0.2.0 feature set.
+The broker must support the query API and provider-routing behavior required by this q/qd release.
 
 The default broker endpoint is:
 
