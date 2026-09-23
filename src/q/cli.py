@@ -178,17 +178,8 @@ def _attachment(
     ):
         kind = "image"
 
-    elif (
-        isinstance(mime_type, str)
-        and mime_type.startswith("audio/")
-    ):
-        kind = "audio"
-
     else:
-        raise CLIError(
-            "unsupported attachment type: "
-            f"{resolved}"
-        )
+        kind = "file"
 
     return {
         "kind": kind,

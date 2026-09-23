@@ -257,10 +257,11 @@ def _attachments(
         if kind not in {
             "image",
             "audio",
+            "file",
         }:
             raise ValueError(
                 "attachment kind must be "
-                "'image' or 'audio'"
+                "'image', 'audio', or 'file'"
             )
 
         if (

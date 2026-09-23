@@ -190,7 +190,7 @@ def test_attach_media_is_forwarded_as_structured_input(
                 "path": str(image.resolve()),
             },
             {
-                "kind": "audio",
+                "kind": "file",
                 "path": str(audio.resolve()),
             },
         ]
@@ -874,7 +874,7 @@ def test_attach_rejects_missing_file(
     asyncio.run(run())
 
 
-def test_attach_rejects_unsupported_file_type(
+def test_attach_generic_file_is_forwarded(
     tmp_path,
 ):
     async def run():
@@ -888,20 +888,35 @@ def test_attach_rejects_unsupported_file_type(
             "this",
         )
 
-        client = FakeClient()
+        client = FakeClient(
+            frames=[
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ]
+        )
         stdout = io.StringIO()
 
-        with pytest.raises(
-            CLIError,
-            match="unsupported attachment type",
-        ):
-            await run_query(
-                args=args,
-                client=client,
-                stdin=TTYStringIO(),
-                stdout=stdout,
-            )
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=TTYStringIO(),
+            stdout=stdout,
+        )
 
-        assert client.sent == []
+        assert status == 0
+
+        method, params = client.sent[0]
+
+        assert method == "submit"
+        assert params["attachments"] == [
+            {
+                "kind": "file",
+                "path": str(document.resolve()),
+            },
+        ]
 
     asyncio.run(run())

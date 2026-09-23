@@ -992,7 +992,7 @@ def test_submit_forwards_attachments(
                     "path": "/tmp/example.png",
                 },
                 {
-                    "kind": "audio",
+                    "kind": "file",
                     "path": "/tmp/example.wav",
                 },
             ]
