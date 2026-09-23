@@ -197,6 +197,9 @@ def make_stack(
         state_dir=(
             tmp_path / "state"
         ),
+        attachments_dir=(
+            tmp_path / "attachments"
+        ),
         query_id_factory=(
             lambda: next(counter)
         ),
@@ -986,14 +989,20 @@ def test_submit_forwards_attachments(
         try:
             client = IPCClient(socket)
 
+            image = tmp_path / "example.png"
+            audio = tmp_path / "example.wav"
+
+            image.write_bytes(b"fake-png")
+            audio.write_bytes(b"fake-wav")
+
             attachments = [
                 {
                     "kind": "image",
-                    "path": "/tmp/example.png",
+                    "path": str(image),
                 },
                 {
                     "kind": "file",
-                    "path": "/tmp/example.wav",
+                    "path": str(audio),
                 },
             ]
 
@@ -1011,9 +1020,30 @@ def test_submit_forwards_attachments(
                 == QueryState.COMPLETED.value
             )
 
+            query_id = result["query_id"]
+
             assert (
                 broker.calls[0]["attachments"]
-                == attachments
+                == [
+                    {
+                        "kind": "image",
+                        "path": str(
+                            tmp_path
+                            / "attachments"
+                            / query_id
+                            / "0000-example.png"
+                        ),
+                    },
+                    {
+                        "kind": "file",
+                        "path": str(
+                            tmp_path
+                            / "attachments"
+                            / query_id
+                            / "0001-example.wav"
+                        ),
+                    },
+                ]
             )
 
         finally:

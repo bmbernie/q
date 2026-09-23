@@ -256,6 +256,10 @@ async def serve(
             state_dir=(
                 paths.state_dir
             ),
+            attachments_dir=(
+                paths.database_path.parent
+                / "attachments"
+            ),
             default_model=(
                 config.model
             ),

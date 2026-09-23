@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from collections.abc import (
     AsyncIterator,
@@ -160,6 +161,7 @@ class QueryEngine:
         store: QStore,
         broker: Broker,
         state_dir: Path,
+        attachments_dir: Path,
         query_id_factory: Callable[[], str]
         | None = None,
         default_model: str = "gpt-6-luna",
@@ -176,6 +178,9 @@ class QueryEngine:
         self.broker = broker
         self.state_dir = (
             state_dir.expanduser()
+        )
+        self.attachments_dir = (
+            attachments_dir.expanduser()
         )
 
         self.default_model = default_model
@@ -227,6 +232,75 @@ class QueryEngine:
 
         self._execution_allowed = asyncio.Event()
         self._execution_allowed.set()
+
+    def _ingest_attachments(
+        self,
+        *,
+        query_id: str,
+        attachments: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        if not attachments:
+            return []
+
+        query_dir = (
+            self.attachments_dir
+            / query_id
+        )
+
+        try:
+            query_dir.mkdir(
+                parents=True,
+                exist_ok=False,
+            )
+
+            managed: list[
+                dict[str, str]
+            ] = []
+
+            for index, attachment in enumerate(
+                attachments
+            ):
+                source = Path(
+                    attachment["path"]
+                ).expanduser().resolve(
+                    strict=True
+                )
+
+                if not source.is_file():
+                    raise ValueError(
+                        "attachment is not a "
+                        "regular file: "
+                        f"{source}"
+                    )
+
+                target = (
+                    query_dir
+                    / (
+                        f"{index:04d}-"
+                        f"{source.name}"
+                    )
+                )
+
+                shutil.copyfile(
+                    source,
+                    target,
+                )
+
+                managed.append(
+                    {
+                        "kind": attachment["kind"],
+                        "path": str(target),
+                    }
+                )
+
+            return managed
+
+        except Exception:
+            shutil.rmtree(
+                query_dir,
+                ignore_errors=True,
+            )
+            raise
 
     async def submit(
         self,
@@ -345,36 +419,54 @@ class QueryEngine:
             / f"{query_id}.ndjson"
         )
 
-        query = self.store.create_query(
-            query_id=query_id,
-            session_name=session_name,
-            model=effective_model,
-            reasoning_effort=(
-                effective_reasoning_effort
-            ),
-            tools_policy=(
-                effective_tools_policy
-            ),
-            prompt_metadata={
-                "input": input_text,
-                "cwd": cwd,
-                "attachments": [
-                    dict(attachment)
-                    for attachment
-                    in (attachments or [])
-                ],
-                "sandbox": sandbox,
-                "backend": backend,
-            },
-            log_path=log_path,
-            session_log_path=(
-                session_log_path
-            ),
-            detached=detached,
-            stdout_attached=(
-                stdout_attached
-            ),
+        managed_attachments = (
+            self._ingest_attachments(
+                query_id=query_id,
+                attachments=(
+                    attachments or []
+                ),
+            )
         )
+
+        try:
+            query = self.store.create_query(
+                query_id=query_id,
+                session_name=session_name,
+                model=effective_model,
+                reasoning_effort=(
+                    effective_reasoning_effort
+                ),
+                tools_policy=(
+                    effective_tools_policy
+                ),
+                prompt_metadata={
+                    "input": input_text,
+                    "cwd": cwd,
+                    "attachments": [
+                        dict(attachment)
+                        for attachment
+                        in managed_attachments
+                    ],
+                    "sandbox": sandbox,
+                    "backend": backend,
+                },
+                log_path=log_path,
+                session_log_path=(
+                    session_log_path
+                ),
+                detached=detached,
+                stdout_attached=(
+                    stdout_attached
+                ),
+            )
+
+        except Exception:
+            shutil.rmtree(
+                self.attachments_dir
+                / query_id,
+                ignore_errors=True,
+            )
+            raise
 
         self._schedule(
             query_id

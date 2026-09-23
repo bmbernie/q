@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from q.engine import QueryEngine
 from q.models import (
@@ -183,6 +184,9 @@ def make_engine(tmp_path):
         state_dir=(
             tmp_path / "state"
         ),
+        attachments_dir=(
+            tmp_path / "attachments"
+        ),
         query_id_factory=(
             lambda: next(counter)
         ),
@@ -195,6 +199,151 @@ def make_engine(tmp_path):
     )
 
 
+def test_engine_ingests_attachment_into_managed_storage(
+    tmp_path,
+):
+    async def run():
+        source_dir = tmp_path / "external"
+        source_dir.mkdir()
+
+        source = source_dir / "capture.bin"
+        source.write_bytes(
+            b"original attachment bytes"
+        )
+
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        try:
+            query = await engine.submit(
+                input_text="inspect this",
+                cwd="/tmp",
+                attachments=[
+                    {
+                        "kind": "file",
+                        "path": str(source),
+                    },
+                ],
+            )
+
+            events = [
+                event
+                async for event in engine.watch(
+                    query.query_id
+                )
+            ]
+
+            assert (
+                events[-1]["state"]
+                == QueryState.COMPLETED.value
+            )
+
+            managed = (
+                tmp_path
+                / "attachments"
+                / query.query_id
+                / "0000-capture.bin"
+            )
+
+            expected = [
+                {
+                    "kind": "file",
+                    "path": str(managed),
+                },
+            ]
+
+            stored = store.get_query(
+                query.query_id
+            )
+
+            assert stored is not None
+            assert (
+                stored.prompt_metadata[
+                    "attachments"
+                ]
+                == expected
+            )
+            assert (
+                broker.calls[0][
+                    "attachments"
+                ]
+                == expected
+            )
+            assert managed.read_bytes() == (
+                b"original attachment bytes"
+            )
+
+            source.write_bytes(
+                b"changed after submission"
+            )
+
+            assert managed.read_bytes() == (
+                b"original attachment bytes"
+            )
+
+        finally:
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_engine_removes_managed_attachments_when_query_create_fails(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        source = tmp_path / "capture.bin"
+        source.write_bytes(b"attachment bytes")
+
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        def fail_create_query(**kwargs):
+            raise RuntimeError(
+                "synthetic create_query failure"
+            )
+
+        monkeypatch.setattr(
+            store,
+            "create_query",
+            fail_create_query,
+        )
+
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="synthetic create_query failure",
+            ):
+                await engine.submit(
+                    input_text="inspect this",
+                    cwd="/tmp",
+                    attachments=[
+                        {
+                            "kind": "file",
+                            "path": str(source),
+                        },
+                    ],
+                )
+
+            assert not (
+                tmp_path
+                / "attachments"
+                / "q-1"
+            ).exists()
+
+            assert store.get_query("q-1") is None
+            assert broker.calls == []
+
+        finally:
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
 def test_engine_persists_and_forwards_attachments(
     tmp_path,
 ):
@@ -203,14 +352,20 @@ def test_engine_persists_and_forwards_attachments(
             make_engine(tmp_path)
         )
 
+        image = tmp_path / "example.png"
+        audio = tmp_path / "example.wav"
+
+        image.write_bytes(b"fake-png")
+        audio.write_bytes(b"fake-wav")
+
         attachments = [
             {
                 "kind": "image",
-                "path": "/tmp/example.png",
+                "path": str(image),
             },
             {
                 "kind": "audio",
-                "path": "/tmp/example.wav",
+                "path": str(audio),
             },
         ]
 
@@ -238,16 +393,38 @@ def test_engine_persists_and_forwards_attachments(
         )
 
         assert stored is not None
+
+        expected = [
+            {
+                "kind": "image",
+                "path": str(
+                    tmp_path
+                    / "attachments"
+                    / query.query_id
+                    / "0000-example.png"
+                ),
+            },
+            {
+                "kind": "audio",
+                "path": str(
+                    tmp_path
+                    / "attachments"
+                    / query.query_id
+                    / "0001-example.wav"
+                ),
+            },
+        ]
+
         assert (
             stored.prompt_metadata[
                 "attachments"
             ]
-            == attachments
+            == expected
         )
 
         assert broker.calls[0][
             "attachments"
-        ] == attachments
+        ] == expected
 
     asyncio.run(run())
 
@@ -903,6 +1080,9 @@ def test_attached_interaction_can_be_answered(
             state_dir=(
                 tmp_path / "state"
             ),
+            attachments_dir=(
+                tmp_path / "attachments"
+            ),
             query_id_factory=(
                 lambda: "q-interactive"
             ),
@@ -979,6 +1159,9 @@ def test_detached_interaction_declines_automatically(
             broker=broker,
             state_dir=(
                 tmp_path / "state"
+            ),
+            attachments_dir=(
+                tmp_path / "attachments"
             ),
             query_id_factory=(
                 lambda: "q-detached-i"
@@ -1134,6 +1317,9 @@ def test_emit_rotates_global_and_session_logs_only(
             store=store,
             broker=broker,
             state_dir=state_dir,
+            attachments_dir=(
+                tmp_path / "attachments"
+            ),
             log_rotate_bytes=32,
             log_rotate_archives=2,
         )
@@ -1428,6 +1614,9 @@ def test_engine_promotes_artifact_event(
             store=store,
             broker=ArtifactBroker(),
             state_dir=tmp_path / "state",
+            attachments_dir=(
+                tmp_path / "attachments"
+            ),
             query_id_factory=(
                 lambda: "q-artifact"
             ),

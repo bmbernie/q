@@ -287,11 +287,15 @@ Attachments may be repeated:
 
     q --attach capture.pcap --attach notes.pdf "Analyze these"
 
-Images are sent to Codex as native image input so the model can
-inspect them directly. Other regular files are attached by filesystem
-path so Codex can inspect them with available tools. This supports
-files such as audio, PDFs, archives, packet captures, databases, and
-binaries without requiring q to understand each file format.
+Attachments are copied into q-managed storage when the query is
+submitted, so detached and queued queries do not depend on the original
+file remaining unchanged or available.
+
+Images are sent to Codex as native image input so the model can inspect
+them directly. Other regular files are exposed from the managed copy by
+filesystem path so Codex can inspect them with available tools. This
+supports files such as audio, PDFs, archives, packet captures, databases,
+and binaries without requiring q to understand each file format.
 
 The web backend does not currently support attachments.
 
