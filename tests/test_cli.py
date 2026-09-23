@@ -649,3 +649,134 @@ def test_safe_approval_falls_back_to_cancel_when_decline_unavailable():
     assert result == {
         "decision": "cancel",
     }
+
+
+
+def test_no_stream_prints_artifact_path(
+    tmp_path,
+):
+    async def run():
+        args = parse(
+            "--no-stream",
+            "generate image",
+        )
+
+        artifact_path = (
+            "/home/b/.codex/generated_images/"
+            "thread-artifact/image-1.png"
+        )
+
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "delta",
+                    {
+                        "delta": (
+                            "IMAGE-GEN-TOOLS-PASS"
+                        ),
+                    },
+                ),
+                IPCFrame.event_frame(
+                    "r",
+                    "artifact",
+                    {
+                        "artifact_id": "image-1",
+                        "artifact_type": "image",
+                        "mime_type": "image/png",
+                        "path": artifact_path,
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ]
+        )
+
+        stdout = io.StringIO()
+
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=TTYStringIO(),
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert stdout.getvalue() == (
+            "IMAGE-GEN-TOOLS-PASS\n"
+            "\n"
+            "Artifact: "
+            + artifact_path
+            + " (image/png)\n"
+        )
+
+    asyncio.run(run())
+
+
+
+def test_streaming_prints_artifact_path(
+    tmp_path,
+):
+    async def run():
+        args = parse(
+            "generate image",
+        )
+
+        artifact_path = (
+            "/home/b/.codex/generated_images/"
+            "thread-artifact/image-1.png"
+        )
+
+        client = FakeClient(
+            frames=[
+                IPCFrame.event_frame(
+                    "r",
+                    "delta",
+                    {
+                        "delta": (
+                            "IMAGE-GEN-TOOLS-PASS"
+                        ),
+                    },
+                ),
+                IPCFrame.event_frame(
+                    "r",
+                    "artifact",
+                    {
+                        "artifact_id": "image-1",
+                        "artifact_type": "image",
+                        "mime_type": "image/png",
+                        "path": artifact_path,
+                    },
+                ),
+                IPCFrame.result_frame(
+                    "r",
+                    {
+                        "state": "completed",
+                    },
+                ),
+            ]
+        )
+
+        stdout = io.StringIO()
+
+        status = await run_query(
+            args=args,
+            client=client,
+            stdin=TTYStringIO(),
+            stdout=stdout,
+        )
+
+        assert status == 0
+        assert stdout.getvalue() == (
+            "IMAGE-GEN-TOOLS-PASS\n"
+            "\n"
+            "Artifact: "
+            + artifact_path
+            + " (image/png)\n"
+        )
+
+    asyncio.run(run())

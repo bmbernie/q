@@ -1286,3 +1286,139 @@ def test_session_with_multiple_bindings_requires_backend(
         store.close()
 
     asyncio.run(run())
+
+
+
+class ArtifactBroker:
+    def stream_query(
+        self,
+        *,
+        input_text,
+        cwd,
+        model,
+        reasoning_effort,
+        backend,
+        thread_id,
+        tools_policy,
+        ephemeral,
+        sandbox,
+    ):
+        return self._stream_query()
+
+    async def _stream_query(self):
+        yield {
+            "type": "thread",
+            "thread_id": "thread-artifact",
+            "backend": "codex",
+        }
+
+        yield {
+            "type": "turn",
+            "thread_id": "thread-artifact",
+            "turn_id": "turn-artifact",
+        }
+
+        yield {
+            "type": "delta",
+            "thread_id": "thread-artifact",
+            "turn_id": "turn-artifact",
+            "delta": "done",
+        }
+
+        yield {
+            "type": "artifact",
+            "thread_id": "thread-artifact",
+            "turn_id": "turn-artifact",
+            "artifact_id": "image-1",
+            "artifact_type": "image",
+            "mime_type": "image/png",
+            "path": (
+                "/home/b/.codex/generated_images/"
+                "thread-artifact/image-1.png"
+            ),
+        }
+
+        yield {
+            "type": "completed",
+            "thread_id": "thread-artifact",
+            "turn_id": "turn-artifact",
+            "status": "completed",
+            "error": None,
+        }
+
+    async def interrupt(
+        self,
+        *,
+        thread_id,
+        turn_id,
+    ):
+        pass
+
+
+def test_engine_promotes_artifact_event(
+    tmp_path,
+):
+    async def run():
+        store = QStore(
+            tmp_path / "q.sqlite3"
+        )
+
+        engine = QueryEngine(
+            store=store,
+            broker=ArtifactBroker(),
+            state_dir=tmp_path / "state",
+            query_id_factory=(
+                lambda: "q-artifact"
+            ),
+        )
+
+        query = await engine.submit(
+            input_text="generate image",
+            cwd="/tmp",
+        )
+
+        events = [
+            event
+            async for event in engine.watch(
+                query.query_id
+            )
+        ]
+
+        artifacts = [
+            event
+            for event in events
+            if event.get("type")
+            == "artifact"
+        ]
+
+        assert len(artifacts) == 1
+
+        artifact = artifacts[0]
+
+        assert (
+            artifact["artifact_id"]
+            == "image-1"
+        )
+        assert (
+            artifact["artifact_type"]
+            == "image"
+        )
+        assert (
+            artifact["mime_type"]
+            == "image/png"
+        )
+        assert artifact["path"] == (
+            "/home/b/.codex/generated_images/"
+            "thread-artifact/image-1.png"
+        )
+
+        assert (
+            await engine.wait(
+                query.query_id
+            )
+        ).state == QueryState.COMPLETED
+
+        await engine.aclose()
+        store.close()
+
+    asyncio.run(run())

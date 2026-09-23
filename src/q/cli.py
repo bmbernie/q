@@ -1131,6 +1131,7 @@ async def run_query(
         return 0
 
     deltas: list[str] = []
+    artifacts: list[tuple[str, str]] = []
     final = None
     wrote_stream = False
     last_delta = ""
@@ -1161,6 +1162,51 @@ async def run_query(
                 stdout.write(delta)
                 stdout.flush()
                 wrote_stream = True
+
+        elif (
+            frame.type == "event"
+            and frame.event == "artifact"
+        ):
+            data = frame.data
+
+            if not isinstance(data, dict):
+                raise CLIError(
+                    "invalid artifact event"
+                )
+
+            artifact_path = data.get("path")
+            mime_type = data.get(
+                "mime_type"
+            )
+
+            if (
+                not isinstance(
+                    artifact_path,
+                    str,
+                )
+                or not artifact_path
+            ):
+                raise CLIError(
+                    "invalid artifact event"
+                )
+
+            if (
+                not isinstance(
+                    mime_type,
+                    str,
+                )
+                or not mime_type
+            ):
+                mime_type = (
+                    "application/octet-stream"
+                )
+
+            artifacts.append(
+                (
+                    artifact_path,
+                    mime_type,
+                )
+            )
 
         elif (
             frame.type == "event"
@@ -1292,6 +1338,24 @@ async def run_query(
         )
     ):
         stdout.write("\n")
+        stdout.flush()
+
+    if artifacts:
+        if deltas:
+            stdout.write("\n")
+
+        for (
+            artifact_path,
+            mime_type,
+        ) in artifacts:
+            stdout.write(
+                "Artifact: "
+                + artifact_path
+                + " ("
+                + mime_type
+                + ")\n"
+            )
+
         stdout.flush()
 
     state = final.get("state")

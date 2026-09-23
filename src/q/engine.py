@@ -1134,6 +1134,32 @@ class QueryEngine:
                         },
                     )
 
+                if event_type == "artifact":
+                    await self._emit(
+                        query_id,
+                        {
+                            "type": "artifact",
+                            "artifact_id": (
+                                event.get(
+                                    "artifact_id"
+                                )
+                            ),
+                            "artifact_type": (
+                                event.get(
+                                    "artifact_type"
+                                )
+                            ),
+                            "mime_type": (
+                                event.get(
+                                    "mime_type"
+                                )
+                            ),
+                            "path": event.get(
+                                "path"
+                            ),
+                        },
+                    )
+
                 if event_type == "completed":
                     terminal_seen = True
                     await self._complete(
