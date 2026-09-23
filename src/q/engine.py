@@ -247,12 +247,12 @@ class QueryEngine:
             / query_id
         )
 
-        try:
-            query_dir.mkdir(
-                parents=True,
-                exist_ok=False,
-            )
+        query_dir.mkdir(
+            parents=True,
+            exist_ok=False,
+        )
 
+        try:
             managed: list[
                 dict[str, str]
             ] = []
@@ -461,11 +461,12 @@ class QueryEngine:
             )
 
         except Exception:
-            shutil.rmtree(
-                self.attachments_dir
-                / query_id,
-                ignore_errors=True,
-            )
+            if managed_attachments:
+                shutil.rmtree(
+                    self.attachments_dir
+                    / query_id,
+                    ignore_errors=True,
+                )
             raise
 
         self._schedule(

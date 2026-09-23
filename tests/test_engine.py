@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import pytest
 
 from q.engine import QueryEngine
@@ -281,6 +282,178 @@ def test_engine_ingests_attachment_into_managed_storage(
             assert managed.read_bytes() == (
                 b"original attachment bytes"
             )
+
+        finally:
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_engine_cleans_partial_attachment_ingest_failure(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        real_copyfile = shutil.copyfile
+        calls = 0
+
+        def fail_second_copy(src, dst):
+            nonlocal calls
+            calls += 1
+
+            if calls == 2:
+                raise OSError(
+                    "synthetic copy failure"
+                )
+
+            return real_copyfile(
+                src,
+                dst,
+            )
+
+        monkeypatch.setattr(
+            shutil,
+            "copyfile",
+            fail_second_copy,
+        )
+
+        try:
+            with pytest.raises(
+                OSError,
+                match="synthetic copy failure",
+            ):
+                await engine.submit(
+                    input_text="inspect these",
+                    cwd="/tmp",
+                    attachments=[
+                        {
+                            "kind": "file",
+                            "path": str(first),
+                        },
+                        {
+                            "kind": "file",
+                            "path": str(second),
+                        },
+                    ],
+                )
+
+            assert not (
+                tmp_path
+                / "attachments"
+                / "q-1"
+            ).exists()
+
+            assert store.get_query("q-1") is None
+            assert broker.calls == []
+
+        finally:
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_engine_preserves_existing_attachment_directory(
+    tmp_path,
+):
+    async def run():
+        source = tmp_path / "capture.bin"
+        source.write_bytes(b"new attachment")
+
+        existing = (
+            tmp_path
+            / "attachments"
+            / "q-1"
+        )
+        existing.mkdir(parents=True)
+
+        sentinel = existing / "existing.txt"
+        sentinel.write_bytes(b"keep me")
+
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        try:
+            with pytest.raises(
+                FileExistsError
+            ):
+                await engine.submit(
+                    input_text="inspect this",
+                    cwd="/tmp",
+                    attachments=[
+                        {
+                            "kind": "file",
+                            "path": str(source),
+                        },
+                    ],
+                )
+
+            assert sentinel.read_bytes() == b"keep me"
+            assert store.get_query("q-1") is None
+            assert broker.calls == []
+
+        finally:
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_engine_no_attachment_failure_preserves_existing_directory(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        existing = (
+            tmp_path
+            / "attachments"
+            / "q-1"
+        )
+        existing.mkdir(parents=True)
+
+        sentinel = existing / "existing.txt"
+        sentinel.write_bytes(b"keep me")
+
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        def fail_create_query(**kwargs):
+            raise RuntimeError(
+                "synthetic create_query failure"
+            )
+
+        monkeypatch.setattr(
+            store,
+            "create_query",
+            fail_create_query,
+        )
+
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="synthetic create_query failure",
+            ):
+                await engine.submit(
+                    input_text="no attachments",
+                    cwd="/tmp",
+                )
+
+            assert sentinel.read_bytes() == b"keep me"
+            assert store.get_query("q-1") is None
+            assert broker.calls == []
 
         finally:
             await engine.aclose()
