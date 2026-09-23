@@ -72,6 +72,21 @@ def test_quiet_levels():
     assert parse("-qq", "hello").quiet == 2
 
 
+def test_include_option_is_repeatable():
+    args = parse(
+        "-i",
+        "one.txt",
+        "--include",
+        "two.txt",
+        "analyze",
+    )
+
+    assert args.includes == [
+        "one.txt",
+        "two.txt",
+    ]
+
+
 def test_build_input_from_prompt_only():
     result = build_input(
         prompt_parts=[

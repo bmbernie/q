@@ -268,15 +268,32 @@ Prompt plus stdin:
 
     cat source.c | q "Analyze this code"
 
-File input:
+Text file input:
 
-    q -f source.c "Analyze this"
+    q -i source.c "Analyze this"
 
-Multiple files:
+Multiple text files:
 
-    q -f old.c -f new.c "Compare these"
+    q -i old.c -i new.c "Compare these"
 
-Files are currently treated as UTF-8 text input.
+`-i` / `--include` reads each file as UTF-8 text and includes its
+contents in the prompt.
+
+Attach a local file without converting it to prompt text:
+
+    q --attach recording.wav "Inspect this audio file"
+
+Attachments may be repeated:
+
+    q --attach capture.pcap --attach notes.pdf "Analyze these"
+
+Images are sent to Codex as native image input so the model can
+inspect them directly. Other regular files are attached by filesystem
+path so Codex can inspect them with available tools. This supports
+files such as audio, PDFs, archives, packet captures, databases, and
+binaries without requiring q to understand each file format.
+
+The web backend does not currently support attachments.
 
 ## Streaming
 

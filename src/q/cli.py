@@ -61,14 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "-f",
-        "--file",
-        dest="files",
+        "-i",
+        "--include",
+        dest="includes",
         action="append",
         default=[],
         metavar="PATH",
         help=(
-            "include a UTF-8 text file; "
+            "include a UTF-8 text file in the prompt; "
             "may be specified more than once"
         ),
     )
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="PATH",
         help=(
-            "attach a local image or audio file; "
+            "attach a local file; "
             "may be specified more than once"
         ),
     )
@@ -1104,7 +1104,7 @@ async def run_query(
 
     input_text = build_input(
         prompt_parts=args.prompt,
-        file_paths=args.files,
+        file_paths=args.includes,
         stdin=stdin,
     )
 
