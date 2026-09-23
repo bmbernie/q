@@ -218,6 +218,70 @@ def _optional_string(
     return value
 
 
+def _attachments(
+    params: dict[str, Any],
+) -> list[dict[str, str]]:
+    value = params.get(
+        "attachments",
+        [],
+    )
+
+    if not isinstance(value, list):
+        raise ValueError(
+            "attachments must be a list"
+        )
+
+    result: list[dict[str, str]] = []
+
+    for attachment in value:
+        if not isinstance(
+            attachment,
+            dict,
+        ):
+            raise ValueError(
+                "attachment must be an object"
+            )
+
+        if set(attachment) != {
+            "kind",
+            "path",
+        }:
+            raise ValueError(
+                "attachment must contain "
+                "only kind and path"
+            )
+
+        kind = attachment.get("kind")
+        path = attachment.get("path")
+
+        if kind not in {
+            "image",
+            "audio",
+        }:
+            raise ValueError(
+                "attachment kind must be "
+                "'image' or 'audio'"
+            )
+
+        if (
+            not isinstance(path, str)
+            or not path
+        ):
+            raise ValueError(
+                "attachment path must be "
+                "a non-empty string"
+            )
+
+        result.append(
+            {
+                "kind": kind,
+                "path": path,
+            }
+        )
+
+    return result
+
+
 def _boolean(
     params: dict[str, Any],
     name: str,
@@ -678,6 +742,10 @@ class QDService:
             )
         )
 
+        attachments = _attachments(
+            params
+        )
+
         tools_raw = _optional_string(
             params,
             "tools",
@@ -731,6 +799,7 @@ class QDService:
             reasoning_effort=(
                 reasoning_effort
             ),
+            attachments=attachments,
             tools_policy=tools_policy,
             sandbox=sandbox,
             detached=detached,

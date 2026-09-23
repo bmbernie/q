@@ -237,6 +237,7 @@ class QueryEngine:
         model: str | None = None,
         backend: str | None = None,
         reasoning_effort: str | None = None,
+        attachments: list[dict[str, str]] | None = None,
         tools_policy: ToolsPolicy | None = None,
         sandbox: str = "read-only",
         detached: bool = False,
@@ -357,6 +358,11 @@ class QueryEngine:
             prompt_metadata={
                 "input": input_text,
                 "cwd": cwd,
+                "attachments": [
+                    dict(attachment)
+                    for attachment
+                    in (attachments or [])
+                ],
                 "sandbox": sandbox,
                 "backend": backend,
             },
@@ -1074,6 +1080,12 @@ class QueryEngine:
                     model=query.model,
                     reasoning_effort=(
                         query.reasoning_effort
+                    ),
+                    attachments=list(
+                        metadata.get(
+                            "attachments",
+                            [],
+                        )
                     ),
                     backend=selected_backend,
                     thread_id=thread_id,

@@ -33,6 +33,7 @@ class FakeBroker:
         cwd,
         model,
         reasoning_effort,
+        attachments,
         backend,
         thread_id,
         tools_policy,
@@ -46,6 +47,7 @@ class FakeBroker:
             reasoning_effort=(
                 reasoning_effort
             ),
+            attachments=attachments,
             backend=backend,
             thread_id=thread_id,
             tools_policy=tools_policy,
@@ -191,6 +193,63 @@ def make_engine(tmp_path):
         broker,
         engine,
     )
+
+
+def test_engine_persists_and_forwards_attachments(
+    tmp_path,
+):
+    async def run():
+        store, broker, engine = (
+            make_engine(tmp_path)
+        )
+
+        attachments = [
+            {
+                "kind": "image",
+                "path": "/tmp/example.png",
+            },
+            {
+                "kind": "audio",
+                "path": "/tmp/example.wav",
+            },
+        ]
+
+        query = await engine.submit(
+            input_text="inspect these",
+            cwd="/tmp",
+            attachments=attachments,
+        )
+
+        events = [
+            event
+            async for event in engine.watch(
+                query.query_id
+            )
+        ]
+
+        assert events[-1]["type"] == "state"
+        assert (
+            events[-1]["state"]
+            == QueryState.COMPLETED.value
+        )
+
+        stored = store.get_query(
+            query.query_id
+        )
+
+        assert stored is not None
+        assert (
+            stored.prompt_metadata[
+                "attachments"
+            ]
+            == attachments
+        )
+
+        assert broker.calls[0][
+            "attachments"
+        ] == attachments
+
+    asyncio.run(run())
 
 
 def test_same_session_serializes(
@@ -756,6 +815,7 @@ class InteractiveBroker:
         cwd,
         model,
         reasoning_effort,
+        attachments,
         backend,
         thread_id,
         tools_policy,
@@ -1297,6 +1357,7 @@ class ArtifactBroker:
         cwd,
         model,
         reasoning_effort,
+        attachments,
         backend,
         thread_id,
         tools_policy,

@@ -175,6 +175,12 @@ def test_http_broker_sends_backend_selection():
                     cwd="/tmp",
                     model="gpt-test",
                     reasoning_effort="high",
+                    attachments=[
+                        {
+                            "kind": "image",
+                            "path": "/tmp/example.png",
+                        },
+                    ],
                     backend="web",
                     thread_id=None,
                     tools_policy=None,

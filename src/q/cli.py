@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import mimetypes
 import asyncio
 import os
 import sys
@@ -73,6 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--attach",
+        dest="attachments",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "attach a local image or audio file; "
+            "may be specified more than once"
+        ),
+    )
+
+    parser.add_argument(
         "-q",
         dest="quiet",
         action="count",
@@ -130,6 +143,57 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _attachment(
+    raw_path: str,
+) -> dict[str, str]:
+    path = Path(
+        raw_path
+    ).expanduser()
+
+    try:
+        resolved = path.resolve(
+            strict=True
+        )
+    except FileNotFoundError as exc:
+        raise CLIError(
+            "attachment does not exist: "
+            f"{path}"
+        ) from exc
+
+    if not resolved.is_file():
+        raise CLIError(
+            "attachment is not a regular file: "
+            f"{resolved}"
+        )
+
+    mime_type, _ = mimetypes.guess_type(
+        resolved.name
+    )
+
+    if (
+        isinstance(mime_type, str)
+        and mime_type.startswith("image/")
+    ):
+        kind = "image"
+
+    elif (
+        isinstance(mime_type, str)
+        and mime_type.startswith("audio/")
+    ):
+        kind = "audio"
+
+    else:
+        raise CLIError(
+            "unsupported attachment type: "
+            f"{resolved}"
+        )
+
+    return {
+        "kind": kind,
+        "path": str(resolved),
+    }
 
 
 def _read_text_file(
@@ -1053,6 +1117,11 @@ async def run_query(
         stdin=stdin,
     )
 
+    attachments = [
+        _attachment(raw_path)
+        for raw_path in args.attachments
+    ]
+
     if not input_text:
         raise CLIError(
             "no query input provided"
@@ -1085,6 +1154,7 @@ async def run_query(
     params = {
         "input": input_text,
         "cwd": str(cwd),
+        "attachments": attachments,
         "detached": detached,
         "stdout_attached": (
             not detached

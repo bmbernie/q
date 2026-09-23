@@ -45,6 +45,7 @@ class FakeBroker:
         cwd,
         model,
         reasoning_effort,
+        attachments,
         backend,
         thread_id,
         tools_policy,
@@ -58,6 +59,7 @@ class FakeBroker:
             reasoning_effort=(
                 reasoning_effort
             ),
+            attachments=attachments,
             backend=backend,
             thread_id=thread_id,
             tools_policy=tools_policy,
@@ -965,6 +967,61 @@ def test_logs_expose_global_and_session_ndjson(
 
     asyncio.run(run())
 
+
+
+def test_submit_forwards_attachments(
+    tmp_path,
+):
+    async def run():
+        (
+            store,
+            broker,
+            engine,
+            server,
+            socket,
+        ) = make_stack(tmp_path)
+
+        await server.start()
+
+        try:
+            client = IPCClient(socket)
+
+            attachments = [
+                {
+                    "kind": "image",
+                    "path": "/tmp/example.png",
+                },
+                {
+                    "kind": "audio",
+                    "path": "/tmp/example.wav",
+                },
+            ]
+
+            result = await client.request(
+                "submit",
+                {
+                    "input": "inspect these",
+                    "cwd": "/tmp",
+                    "attachments": attachments,
+                },
+            )
+
+            assert (
+                result["state"]
+                == QueryState.COMPLETED.value
+            )
+
+            assert (
+                broker.calls[0]["attachments"]
+                == attachments
+            )
+
+        finally:
+            await server.aclose()
+            await engine.aclose()
+            store.close()
+
+    asyncio.run(run())
 
 
 def test_config_defaults_apply_to_new_query(
